@@ -13,5 +13,9 @@ RUN npm run build
 
 FROM nginx:alpine
 COPY --from=build /app/dist /usr/share/nginx/html
-COPY nginx.conf /etc/nginx/conf.d/default.conf
+# /etc/nginx/templates/*.template: nginx envsubst's ${FEEDBACK_SCRIPT_URL} into this at container start.
+COPY nginx.conf /etc/nginx/templates/default.conf.template
+# /docker-entrypoint.d/*: nginx runs this at container start to write FEEDBACK_SHARED_SECRET into env-config.js.
+COPY docker/generate-feedback-config.sh /docker-entrypoint.d/30-generate-feedback-config.sh
+RUN chmod +x /docker-entrypoint.d/30-generate-feedback-config.sh
 EXPOSE 80
