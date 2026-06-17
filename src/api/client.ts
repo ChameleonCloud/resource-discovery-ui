@@ -1,9 +1,16 @@
 import type {
+  FeedbackPayload,
   NodeAvailabilityResponse,
   NodeSearchParams,
   NodeSearchResponse,
   SiteCollection,
 } from "./types";
+
+declare global {
+  interface Window {
+    __FEEDBACK_SECRET__?: string;
+  }
+}
 
 const BASE = import.meta.env.VITE_API_BASE_URL ?? "/api";
 
@@ -49,4 +56,19 @@ export function fetchNodeAvailability(
   return apiFetch<NodeAvailabilityResponse>(
     `/sites/${siteId}/clusters/${clusterId}/nodes/${nodeId}/availability`,
   );
+}
+
+export async function submitFeedback(payload: FeedbackPayload): Promise<void> {
+  const res = await fetch("/feedback/", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      ...payload,
+      secret: window.__FEEDBACK_SECRET__ ?? "",
+      userAgent: navigator.userAgent,
+    }),
+  });
+  if (!res.ok) {
+    throw new Error(`Feedback submission failed: ${res.status}`);
+  }
 }

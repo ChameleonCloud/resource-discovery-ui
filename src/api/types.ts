@@ -152,6 +152,13 @@ export interface NodeAvailabilityResponse {
   reservations: Reservation[];
 }
 
+export interface FeedbackPayload {
+  page: string;
+  sentiment: "up" | "down";
+  comment?: string;
+  filters?: string;
+}
+
 export interface NodeSearchParams {
   site_id?: string;
   node_type?: string;

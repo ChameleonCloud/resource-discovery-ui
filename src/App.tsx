@@ -21,6 +21,7 @@ function AppInner() {
   const { cart, dispatch } = useCart();
   const [query, setQuery] = useState("");
   const [resetKey, setResetKey] = useState(0);
+  const [filtersSummary, setFiltersSummary] = useState("");
   const location = useLocation();
 
   function handleCartChange(node: SearchNodeItem, add: boolean) {
@@ -39,6 +40,7 @@ function AppInner() {
       cartCount={cart.length}
       center={isDiscovery ? <SearchBar value={query} onChange={setQuery} /> : undefined}
       onLogoClick={handleReset}
+      feedbackFiltersSummary={isDiscovery ? filtersSummary : undefined}
     >
       <Routes>
         <Route
@@ -51,6 +53,7 @@ function AppInner() {
               onQueryChange={setQuery}
               onCartChange={handleCartChange}
               onClearCart={() => dispatch({ type: "clear" })}
+              onFiltersSummaryChange={setFiltersSummary}
             />
           }
         />

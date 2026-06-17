@@ -1,14 +1,16 @@
 import { Link } from "react-router-dom";
 import { CartButton } from "./CartButton";
+import { FeedbackWidget } from "./FeedbackWidget";
 
 interface Props {
   cartCount: number;
   center?: React.ReactNode;
   children: React.ReactNode;
   onLogoClick?: () => void;
+  feedbackFiltersSummary?: string;
 }
 
-export function Layout({ cartCount, center, children, onLogoClick }: Props) {
+export function Layout({ cartCount, center, children, onLogoClick, feedbackFiltersSummary }: Props) {
   return (
     <div className="min-h-screen flex flex-col">
       <header className="bg-brand-info/10 border-b border-brand-info/20 shadow-sm sticky top-0 z-40">
@@ -18,6 +20,7 @@ export function Layout({ cartCount, center, children, onLogoClick }: Props) {
             <div className="text-xs font-medium text-grey tracking-wide">Resource Discovery</div>
           </Link>
           <div className="flex-1 flex justify-center">{center}</div>
+          <FeedbackWidget filtersSummary={feedbackFiltersSummary} />
           <CartButton count={cartCount} />
         </div>
       </header>
