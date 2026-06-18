@@ -235,25 +235,41 @@ export function FilterSidebar({ all, filters, onFiltersChange }: Props) {
       </Section>
 
       <Section title="Availability">
-        {(
-          [
-            { value: "now", label: "Starting now" },
-            { value: "7d", label: "Starting within 7 days" },
-            { value: "custom", label: "Custom start time" },
-          ] as const
-        ).map(({ value, label }) => (
-          <label key={value} className="flex items-center gap-2 py-0.5 cursor-pointer text-sm text-grey-dark hover:text-link">
-            <input
-              type="radio"
-              name="availability"
-              value={value}
-              checked={filters.availabilityWindow === value}
-              onChange={() => onFiltersChange({ ...filters, availabilityWindow: value, customStart: "", customDuration: "" })}
-              className="accent-brand-info"
-            />
-            {label}
-          </label>
-        ))}
+        <div className="flex flex-wrap items-center gap-1.5 text-sm text-grey-dark">
+          <span>Available</span>
+          <select
+            value={filters.availabilityWindow}
+            onChange={(e) =>
+              onFiltersChange({
+                ...filters,
+                availabilityWindow: e.target.value as FilterState["availabilityWindow"],
+                customStart: "",
+                customDuration: "",
+              })
+            }
+            className="text-xs border border-grey-light rounded px-1.5 py-1 text-grey-dark focus:outline-none focus:ring-1 focus:ring-brand-info"
+          >
+            <option value="now">starting now</option>
+            <option value="7d">starting within 7 days</option>
+            <option value="custom">starting at a custom time</option>
+          </select>
+          {filters.availabilityWindow !== "custom" && (
+            <>
+              <span>for at least</span>
+              <select
+                value={filters.duration}
+                onChange={(e) => onFiltersChange({ ...filters, duration: e.target.value as FilterState["duration"] })}
+                className="text-xs border border-grey-light rounded px-1.5 py-1 text-grey-dark focus:outline-none focus:ring-1 focus:ring-brand-info"
+              >
+                <option value="any">any duration</option>
+                <option value="6">6 hrs</option>
+                <option value="24">1 day</option>
+                <option value="72">3 days</option>
+                <option value="168">1 week</option>
+              </select>
+            </>
+          )}
+        </div>
 
         {filters.availabilityWindow === "custom" && (
           <div className="mt-2 space-y-3 ml-1">
@@ -313,32 +329,6 @@ export function FilterSidebar({ all, filters, onFiltersChange }: Props) {
           </div>
         )}
 
-        {filters.availabilityWindow !== "custom" && (
-          <div className="mt-3 pt-3 border-t border-grey-light">
-            <p className="text-xs font-semibold uppercase tracking-wider text-grey mb-2">Available for at least</p>
-            {(
-              [
-                { value: "any", label: "Not set" },
-                { value: "6", label: "6 hrs" },
-                { value: "24", label: "1 day" },
-                { value: "72", label: "3 days" },
-                { value: "168", label: "1 week" },
-              ] as const
-            ).map(({ value, label }) => (
-              <label key={value} className="flex items-center gap-2 py-0.5 cursor-pointer text-sm text-grey-dark hover:text-link">
-                <input
-                  type="radio"
-                  name="duration"
-                  value={value}
-                  checked={filters.duration === value}
-                  onChange={() => onFiltersChange({ ...filters, duration: value })}
-                  className="accent-brand-info"
-                />
-                {label}
-              </label>
-            ))}
-          </div>
-        )}
       </Section>
 
       <Section title="GPU">

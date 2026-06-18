@@ -31,10 +31,8 @@ function buildAvailabilityParams(f: Pick<FilterState, "availabilityWindow" | "cu
   }
   // "No duration filter" — show everything regardless of availability.
   if (f.duration === "any") return {};
-  if (f.availabilityWindow === "7d") {
-    const end = new Date(now.getTime() + SEVEN_DAYS_MS);
-    return { start: now.toISOString(), end: end.toISOString() };
-  }
+  // "7d" duration is enforced by the per-node slot check below, not the server.
+  if (f.availabilityWindow === "7d") return {};
   // "now"
   const hours = Number(f.duration);
   const end = new Date(now.getTime() + hours * 3600 * 1000);
@@ -124,9 +122,9 @@ export function DiscoveryPage({ cart, query, onQueryChange, onCartChange, onClea
 
   const cartIds = useMemo(() => new Set(cart.map((n) => n.uid)), [cart]);
 
-  // "Within 7 days" + a duration needs a per-node check for a free slot of that
-  // length somewhere in the next 7 days (the search API only filters by status).
-  const needsSlotCheck = filters.availabilityWindow === "7d" && filters.duration !== "any";
+  // The search API only filters by status, not duration, so duration is enforced per-node below.
+  const needsSlotCheck =
+    filters.availabilityWindow === "custom" ? Boolean(filters.customDuration) : filters.duration !== "any";
 
   const baseFiltered = useMemo(() => {
     const afterFilters = applyFilters(allNodes, { ...filters, sites: new Set() });
@@ -145,17 +143,20 @@ export function DiscoveryPage({ cart, query, onQueryChange, onCartChange, onClea
 
   const filteredBase = useMemo(() => {
     if (!needsSlotCheck) return baseFiltered;
-    const durationMs = Number(filters.duration) * 3600 * 1000;
     const now = new Date();
-    const horizonEnd = now.getTime() + SEVEN_DAYS_MS;
+    const isCustom = filters.availabilityWindow === "custom";
+    const durationMs = Number(isCustom ? filters.customDuration : filters.duration) * 3600 * 1000;
+    const searchStart = isCustom && filters.customStart ? new Date(filters.customStart) : now;
+    const horizonEnd =
+      filters.availabilityWindow === "7d" ? now.getTime() + SEVEN_DAYS_MS : searchStart.getTime();
     return baseFiltered.filter((_n, i) => {
       const data = slotQueries[i]?.data;
       if (!data) return false;
       const intervals = data.reservations.map((r) => ({ start: new Date(r.start).getTime(), end: new Date(r.end).getTime() }));
-      const slot = findNextAvailableWindow(intervals, durationMs, now);
+      const slot = findNextAvailableWindow(intervals, durationMs, searchStart);
       return slot.start.getTime() <= horizonEnd;
     });
-  }, [baseFiltered, needsSlotCheck, slotQueries, filters.duration]);
+  }, [baseFiltered, needsSlotCheck, slotQueries, filters.duration, filters.availabilityWindow, filters.customStart, filters.customDuration]);
 
   const filteredPreChip = useMemo(() => {
     if (selectedSites.size === 0) return filteredBase;
