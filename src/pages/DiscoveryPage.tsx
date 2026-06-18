@@ -47,9 +47,10 @@ interface Props {
   onQueryChange: (query: string) => void;
   onCartChange: (node: SearchNodeItem, add: boolean) => void;
   onClearCart: () => void;
+  onFiltersSummaryChange?: (summary: string) => void;
 }
 
-export function DiscoveryPage({ cart, query, onQueryChange, onCartChange, onClearCart }: Props) {
+export function DiscoveryPage({ cart, query, onQueryChange, onCartChange, onClearCart, onFiltersSummaryChange }: Props) {
   const [filters, setFilters] = useState<FilterState>(DEFAULT_FILTERS);
   const [chipSelections, setChipSelections] = useState<Set<string>>(new Set());
   const [selectedSites, setSelectedSites] = useState<Set<string>>(new Set());
@@ -232,6 +233,21 @@ export function DiscoveryPage({ cart, query, onQueryChange, onCartChange, onClea
     if (sites.length === 0) return false;
     return sites.some((s) => isCoreSite(s.uid) ? !selectedSites.has(s.uid) : selectedSites.has(s.uid));
   }, [sites, selectedSites]);
+
+  const filtersSummary = useMemo(() => {
+    const parts: string[] = [];
+    if (debouncedQuery.trim()) parts.push(`Search: "${debouncedQuery.trim()}"`);
+    parts.push(...filterChips.map((c) => c.label));
+    if (sitesDifferFromDefault) {
+      parts.push(`Sites: ${Array.from(selectedSites).map((id) => siteMap.get(id)?.name ?? id).join(", ")}`);
+    }
+    if (selectedNodeTypeChips.length > 0) parts.push(`Node types: ${selectedNodeTypeChips.join(", ")}`);
+    return parts.join("; ");
+  }, [debouncedQuery, filterChips, sitesDifferFromDefault, selectedSites, siteMap, selectedNodeTypeChips]);
+
+  useEffect(() => {
+    onFiltersSummaryChange?.(filtersSummary);
+  }, [filtersSummary, onFiltersSummaryChange]);
 
   const reservationWindow = useMemo(() => {
     const params = buildAvailabilityParams({
