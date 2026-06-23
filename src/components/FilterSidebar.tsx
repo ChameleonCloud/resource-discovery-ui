@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import * as Checkbox from "@radix-ui/react-checkbox";
 import type { SearchNodeItem } from "../api/types";
 import type { FilterState } from "../lib/filterCounts";
@@ -134,8 +134,54 @@ function GroupSection({ label, children }: { label: string; children: React.Reac
   );
 }
 
+const MIN_WIDTH = 180;
+const MAX_WIDTH = 800;
+const DEFAULT_WIDTH = 224;
+const WIDTH_STORAGE_KEY = "filterSidebarWidth";
+
 export function FilterSidebar({ all, filters, onFiltersChange }: Props) {
   const [showAdvanced, setShowAdvanced] = useState(false);
+  const [width, setWidth] = useState(() => {
+    const stored = Number(localStorage.getItem(WIDTH_STORAGE_KEY));
+    return Number.isFinite(stored) && stored >= MIN_WIDTH && stored <= MAX_WIDTH ? stored : DEFAULT_WIDTH;
+  });
+  const [isResizing, setIsResizing] = useState(false);
+  const startRef = useRef({ x: 0, width: DEFAULT_WIDTH });
+
+  const handleMouseDown = useCallback((e: React.MouseEvent) => {
+    e.preventDefault();
+    startRef.current = { x: e.clientX, width };
+    setIsResizing(true);
+  }, [width]);
+
+  const handleDoubleClick = useCallback(() => {
+    setWidth(DEFAULT_WIDTH);
+  }, []);
+
+  useEffect(() => {
+    if (!isResizing) return;
+    document.body.style.cursor = "col-resize";
+
+    function handleMouseMove(e: MouseEvent) {
+      const next = startRef.current.width + (e.clientX - startRef.current.x);
+      setWidth(Math.min(MAX_WIDTH, Math.max(MIN_WIDTH, next)));
+    }
+    function handleMouseUp() {
+      setIsResizing(false);
+    }
+
+    document.addEventListener("mousemove", handleMouseMove);
+    document.addEventListener("mouseup", handleMouseUp);
+    return () => {
+      document.body.style.cursor = "";
+      document.removeEventListener("mousemove", handleMouseMove);
+      document.removeEventListener("mouseup", handleMouseUp);
+    };
+  }, [isResizing]);
+
+  useEffect(() => {
+    localStorage.setItem(WIDTH_STORAGE_KEY, String(width));
+  }, [width]);
 
   const gpuModels = uniqueValues(
     all.filter((n) => n.gpu?.gpu),
@@ -197,7 +243,17 @@ export function FilterSidebar({ all, filters, onFiltersChange }: Props) {
     hasAnyAdvancedFilter(filters);
 
   return (
-    <aside className="w-56 flex-shrink-0 bg-white border-r border-grey-light p-4 overflow-y-auto sticky top-20 self-start h-[calc(100vh-5rem)]">
+    <aside
+      style={{ width }}
+      className={`relative flex-shrink-0 bg-white border-r border-grey-light sticky top-20 self-start h-[calc(100vh-5rem)] ${isResizing ? "select-none" : ""}`}
+    >
+      <div
+        onMouseDown={handleMouseDown}
+        onDoubleClick={handleDoubleClick}
+        title="Drag to resize, double-click to reset"
+        className={`absolute top-0 right-0 h-full w-1.5 cursor-col-resize hover:bg-brand-info/40 ${isResizing ? "bg-brand-info/40" : ""}`}
+      />
+      <div className="p-4 overflow-y-auto h-full">
       <div className="flex items-center justify-between mb-4">
         <span className="text-xs font-semibold uppercase tracking-wider text-grey">Filters</span>
         {isFiltered && (
@@ -831,6 +887,7 @@ export function FilterSidebar({ all, filters, onFiltersChange }: Props) {
             </GroupSection>
           </div>
         )}
+      </div>
       </div>
     </aside>
   );
