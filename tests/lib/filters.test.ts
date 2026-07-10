@@ -5,7 +5,7 @@ import {
   applyTextQuery,
   computeFacetCount,
   DEFAULT_FILTERS,
-} from "../../src/lib/filterCounts";
+} from "../../src/lib/filters";
 
 function makeNode(overrides: Partial<SearchNodeItem> = {}): SearchNodeItem {
   return {
@@ -32,13 +32,6 @@ const NODES: SearchNodeItem[] = [
 describe("applyFilters", () => {
   it("returns all nodes with default filters", () => {
     expect(applyFilters(NODES, DEFAULT_FILTERS)).toHaveLength(4);
-  });
-
-  it("filters by site", () => {
-    const f = { ...DEFAULT_FILTERS, sites: new Set(["uc"]) };
-    const result = applyFilters(NODES, f);
-    expect(result).toHaveLength(2);
-    expect(result.every((n) => n.site_id === "uc")).toBe(true);
   });
 
   it("filters by GPU", () => {
@@ -88,20 +81,21 @@ describe("applyTextQuery", () => {
 });
 
 describe("computeFacetCount", () => {
-  it("counts nodes matching a site facet", () => {
-    const count = computeFacetCount(NODES, DEFAULT_FILTERS, "site", "uc");
-    expect(count).toBe(2);
+  it("counts nodes matching a GPU facet", () => {
+    const count = computeFacetCount(NODES, DEFAULT_FILTERS, "hasGpu", true);
+    expect(count).toBe(1);
   });
 
-  it("counts zero for a site with no nodes", () => {
-    const count = computeFacetCount(NODES, DEFAULT_FILTERS, "site", "nonexistent");
-    expect(count).toBe(0);
+  it("counts zero for a GPU facet with no matches", () => {
+    const count = computeFacetCount(NODES, DEFAULT_FILTERS, "hasGpu", false);
+    expect(count).toBe(3);
   });
 
-  it("counts across other active filters", () => {
-    // With site=uc filter active, count for tacc should still be 1 (faceted)
-    const f = { ...DEFAULT_FILTERS, sites: new Set(["uc"]) };
-    const count = computeFacetCount(NODES, f, "site", "tacc");
+  it("clears its own facet before counting", () => {
+    // hasGpu:false is active, but computeFacetCount clears that facet first,
+    // so the GPU node is still visible for the hasGpu:true count
+    const f = { ...DEFAULT_FILTERS, hasGpu: false as const };
+    const count = computeFacetCount(NODES, f, "hasGpu", true);
     expect(count).toBe(1);
   });
 });

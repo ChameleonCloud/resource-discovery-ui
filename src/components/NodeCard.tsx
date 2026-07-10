@@ -2,6 +2,7 @@ import * as Checkbox from "@radix-ui/react-checkbox";
 import type { SearchNodeItem } from "../api/types";
 import { formatRam } from "../lib/availability";
 import { isCoreSite } from "../lib/sites";
+import { hasSsd } from "../lib/filters";
 
 interface Props {
   node: SearchNodeItem;
@@ -48,12 +49,7 @@ export function NodeSpecGrid({ node }: { node: SearchNodeItem }) {
       </span>
       {node.architecture?.platform_type && <span>Arch: {node.architecture.platform_type}</span>}
       {node.infiniband && <span>InfiniBand</span>}
-      <span>
-        SSD:{" "}
-        {node.storage_devices?.some((d) => d.interface?.toLowerCase().includes("ssd") || d.driver?.toLowerCase() === "nvme")
-          ? "Yes"
-          : "No"}
-      </span>
+      <span>SSD: {hasSsd(node) ? "Yes" : "No"}</span>
     </div>
   );
 }
@@ -91,27 +87,28 @@ export function NodeCard({ node, siteName, selected, onSelect, onClick }: Props)
           <h2 className="font-semibold text-grey-dark truncate text-sm flex-1">{node.node_name || node.node_type}</h2>
         </div>
 
-        <div className="flex items-center gap-1 mb-1.5 overflow-hidden">
-          <span className="text-xs text-grey truncate shrink">{siteName}</span>
-          <span className="text-grey-med text-xs flex-shrink-0">·</span>
-          <span className="text-xs text-grey truncate shrink" title={node.node_type}>
-            {node.node_type}
-          </span>
-          <span className="text-grey-med text-xs flex-shrink-0">·</span>
-          <span className="text-xs px-1 rounded bg-brand-info/10 text-brand-info font-medium leading-4 flex-shrink-0">
-            Bare metal
-          </span>
-          <span
-            className={`text-xs px-1 rounded-full font-medium leading-4 flex-shrink-0 ${AVAILABILITY_STYLES[node.availability] ?? AVAILABILITY_STYLES.unknown}`}
-            title={AVAILABILITY_TITLES[node.availability]}
-          >
-            {AVAILABILITY_LABELS[node.availability] ?? AVAILABILITY_LABELS.unknown}
-          </span>
-          {!isCore && (
-            <span className="text-xs px-1 rounded bg-grey-light text-grey font-medium leading-4 flex-shrink-0">
-              Associate
+        <div className="mb-1.5">
+          <div className="flex items-center gap-1 mb-0.5">
+            <span className="text-xs px-1 rounded bg-brand-info/10 text-brand-info font-medium leading-4">
+              Bare metal
             </span>
-          )}
+            <span
+              className={`text-xs px-1 rounded-full font-medium leading-4 ${AVAILABILITY_STYLES[node.availability] ?? AVAILABILITY_STYLES.unknown}`}
+              title={AVAILABILITY_TITLES[node.availability]}
+            >
+              {AVAILABILITY_LABELS[node.availability] ?? AVAILABILITY_LABELS.unknown}
+            </span>
+            {!isCore && (
+              <span className="text-xs px-1 rounded bg-grey-light text-grey font-medium leading-4">
+                Associate
+              </span>
+            )}
+          </div>
+          <div className="flex items-center gap-1 text-xs text-grey overflow-hidden">
+            <span className="truncate shrink">{siteName}</span>
+            <span className="text-grey-med flex-shrink-0">·</span>
+            <span className="truncate shrink" title={node.node_type}>{node.node_type}</span>
+          </div>
         </div>
 
         <NodeSpecGrid node={node} />

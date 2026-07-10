@@ -56,27 +56,30 @@ export function NodeTypeCard({ nodes, siteName, selectedCount, onSelect, onClick
           </span>
         </div>
 
-        <div className="flex items-center gap-1 mb-1.5 overflow-hidden flex-wrap">
-          <span className="text-xs text-grey truncate shrink">{siteName}</span>
-          <span className="text-grey-med text-xs flex-shrink-0">·</span>
-          <span className="text-xs px-1 rounded bg-brand-info/10 text-brand-info font-medium leading-4 flex-shrink-0">
-            Bare metal
-          </span>
-          {(Object.keys(AVAILABILITY_LABELS) as (keyof typeof AVAILABILITY_LABELS)[])
-            .filter((status) => availabilityCounts[status])
-            .map((status) => (
-              <span
-                key={status}
-                className={`text-xs px-1 rounded-full font-medium leading-4 flex-shrink-0 ${AVAILABILITY_STYLES[status]}`}
-              >
-                {availabilityCounts[status]} {AVAILABILITY_LABELS[status]}
-              </span>
-            ))}
-          {!isCore && (
-            <span className="text-xs px-1 rounded bg-grey-light text-grey font-medium leading-4 flex-shrink-0">
-              Associate
+        <div className="mb-1.5">
+          <div className="flex items-center gap-1 flex-wrap mb-0.5">
+            <span className="text-xs px-1 rounded bg-brand-info/10 text-brand-info font-medium leading-4">
+              Bare metal
             </span>
-          )}
+            {(Object.keys(AVAILABILITY_LABELS) as (keyof typeof AVAILABILITY_LABELS)[])
+              .filter((status) => availabilityCounts[status])
+              .map((status) => (
+                <span
+                  key={status}
+                  className={`text-xs px-1 rounded-full font-medium leading-4 ${AVAILABILITY_STYLES[status]}`}
+                >
+                  {availabilityCounts[status]} {AVAILABILITY_LABELS[status]}
+                </span>
+              ))}
+            {!isCore && (
+              <span className="text-xs px-1 rounded bg-grey-light text-grey font-medium leading-4">
+                Associate
+              </span>
+            )}
+          </div>
+          <div className="flex items-center gap-1 text-xs text-grey overflow-hidden">
+            <span className="truncate shrink">{siteName}</span>
+          </div>
         </div>
 
         <NodeSpecGrid node={node} />

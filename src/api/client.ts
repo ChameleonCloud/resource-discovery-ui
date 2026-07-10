@@ -1,5 +1,6 @@
 import type {
   FeedbackPayload,
+  FlavorCollection,
   NodeAvailabilityResponse,
   NodeSearchParams,
   NodeSearchResponse,
@@ -42,6 +43,10 @@ export function fetchNodeSearch(params: NodeSearchParams): Promise<NodeSearchRes
   q.set("offset", String(params.offset ?? 0));
   q.set("limit", String(params.limit ?? 500));
   return apiFetch<NodeSearchResponse>(`/nodes/search?${q}`);
+}
+
+export function fetchSiteFlavors(siteId: string): Promise<FlavorCollection> {
+  return apiFetch<FlavorCollection>(`/sites/${siteId}/flavors?limit=500`);
 }
 
 export function fetchSiteAvailabilityStatus(siteId: string): Promise<{ site_id: string; last_synced: string; synced_node_count: number }> {

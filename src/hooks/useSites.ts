@@ -1,3 +1,4 @@
+import { useMemo } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { fetchSites } from "../api/client";
 import type { Site } from "../api/types";
@@ -12,9 +13,11 @@ export function useSites() {
 
 export function useSiteMap(): Map<string, Site> {
   const { data } = useSites();
-  const map = new Map<string, Site>();
-  for (const site of data?.items ?? []) {
-    map.set(site.uid, site);
-  }
-  return map;
+  return useMemo(() => {
+    const map = new Map<string, Site>();
+    for (const site of data?.items ?? []) {
+      map.set(site.uid, site);
+    }
+    return map;
+  }, [data]);
 }

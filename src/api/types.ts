@@ -159,6 +159,31 @@ export interface FeedbackPayload {
   filters?: string;
 }
 
+export interface FlavorGpuInfo {
+  gpu: boolean;
+  gpu_count?: number;
+  gpu_allocation?: string;
+}
+
+export interface VmFlavor {
+  uid: string;
+  name: string;
+  vcpus: number;
+  ram_size: number;
+  humanized_ram_size: string;
+  disk_size: number;
+  humanized_disk_size: string;
+  gpu: FlavorGpuInfo;
+  openstack_properties: Record<string, string>;
+  su_cost_per_hour: number;
+}
+
+export interface FlavorCollection {
+  total: number;
+  offset: number;
+  items: VmFlavor[];
+}
+
 export interface NodeSearchParams {
   site_id?: string;
   node_type?: string;

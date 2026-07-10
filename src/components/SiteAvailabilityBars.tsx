@@ -23,6 +23,7 @@ interface SiteData {
 
 function buildSiteData(nodes: SearchNodeItem[], siteMap: Map<string, Site>): SiteData[] {
   const map = new Map<string, SiteData>();
+  const typeMaps = new Map<string, Map<string, NodeTypeCount>>();
 
   for (const node of nodes) {
     if (!map.has(node.site_id)) {
@@ -31,6 +32,7 @@ function buildSiteData(nodes: SearchNodeItem[], siteMap: Map<string, Site>): Sit
         siteName: siteMap.get(node.site_id)?.name ?? node.site_id,
         available: 0, reserved: 0, maintenance: 0, unknown: 0, total: 0, byNodeType: [],
       });
+      typeMaps.set(node.site_id, new Map());
     }
     const s = map.get(node.site_id)!;
     s.total++;
@@ -38,22 +40,20 @@ function buildSiteData(nodes: SearchNodeItem[], siteMap: Map<string, Site>): Sit
     else if (node.availability === "reserved") s.reserved++;
     else if (node.availability === "maintenance") s.maintenance++;
     else s.unknown++;
+
+    const typeMap = typeMaps.get(node.site_id)!;
+    if (!typeMap.has(node.node_type)) {
+      typeMap.set(node.node_type, { type: node.node_type, available: 0, reserved: 0, maintenance: 0, unknown: 0 });
+    }
+    const t = typeMap.get(node.node_type)!;
+    if (node.availability === "available") t.available++;
+    else if (node.availability === "reserved") t.reserved++;
+    else if (node.availability === "maintenance") t.maintenance++;
+    else t.unknown++;
   }
 
   for (const [siteId, siteData] of map) {
-    const typeMap = new Map<string, NodeTypeCount>();
-    for (const node of nodes) {
-      if (node.site_id !== siteId) continue;
-      if (!typeMap.has(node.node_type)) {
-        typeMap.set(node.node_type, { type: node.node_type, available: 0, reserved: 0, maintenance: 0, unknown: 0 });
-      }
-      const t = typeMap.get(node.node_type)!;
-      if (node.availability === "available") t.available++;
-      else if (node.availability === "reserved") t.reserved++;
-      else if (node.availability === "maintenance") t.maintenance++;
-      else t.unknown++;
-    }
-    siteData.byNodeType = Array.from(typeMap.values()).sort((a, b) => b.available - a.available);
+    siteData.byNodeType = Array.from(typeMaps.get(siteId)!.values()).sort((a, b) => b.available - a.available);
   }
 
   return Array.from(map.values()).sort((a, b) => b.total - a.total);
@@ -62,7 +62,6 @@ function buildSiteData(nodes: SearchNodeItem[], siteMap: Map<string, Site>): Sit
 interface Props {
   nodes: SearchNodeItem[];
   siteMap: Map<string, Site>;
-  controls?: React.ReactNode;
   onFilter?: (siteId: string, nodeType: string) => void;
   selectedChips?: Set<string>;
   selectedSites?: Set<string>;
@@ -70,7 +69,7 @@ interface Props {
   siteOrder?: string[];
 }
 
-export function SiteAvailabilityBars({ nodes, siteMap, controls, onFilter, selectedChips, selectedSites, onSiteToggle, siteOrder }: Props) {
+export function SiteAvailabilityBars({ nodes, siteMap, onFilter, selectedChips, selectedSites, onSiteToggle, siteOrder }: Props) {
   const [showAssociate, setShowAssociate] = useState(false);
 
   if (nodes.length === 0) return null;
@@ -179,7 +178,7 @@ export function SiteAvailabilityBars({ nodes, siteMap, controls, onFilter, selec
                 <button
                   key={nt.type}
                   onClick={(e) => { e.stopPropagation(); onFilter?.(site.siteId, nt.type); }}
-                  className={`text-[10px] px-1.5 py-0.5 rounded-full font-medium transition-all ${
+                  className={`text-xs px-1.5 py-0.5 rounded-full font-medium transition-all ${
                     onFilter ? "cursor-pointer" : "cursor-default"
                   } ${
                     isSelected
@@ -218,7 +217,7 @@ export function SiteAvailabilityBars({ nodes, siteMap, controls, onFilter, selec
             )}
             <button
               onClick={() => setShowAssociate((v) => !v)}
-              className="text-[10px] text-link hover:text-link-hover ml-28 mt-1 transition-colors"
+              className="text-xs text-link hover:text-link-hover ml-28 mt-1 transition-colors"
             >
               {showAssociate
                 ? "Hide associate sites"
@@ -228,23 +227,18 @@ export function SiteAvailabilityBars({ nodes, siteMap, controls, onFilter, selec
         )}
       </div>
 
-      <div className="flex items-center justify-between mt-2.5 ml-28">
-        <div className="flex items-center gap-4">
-          {[
-            { color: "bg-brand-success", label: "Available" },
-            { color: "bg-brand-danger", label: "Reserved" },
-            { color: "bg-yellow-500", label: "Maintenance" },
-            { color: "bg-grey-med", label: "Unknown" },
-          ].map(({ color, label }) => (
-            <span key={label} className="flex items-center gap-1 text-[10px] text-grey">
-              <span className={`w-2 h-2 rounded-full ${color} inline-block`} />
-              {label}
-            </span>
-          ))}
-        </div>
-        <div className="flex items-center gap-3">
-          {controls}
-        </div>
+      <div className="flex items-center gap-4 mt-2.5 ml-28">
+        {[
+          { color: "bg-brand-success", label: "Available" },
+          { color: "bg-brand-danger", label: "Reserved" },
+          { color: "bg-yellow-500", label: "Maintenance" },
+          { color: "bg-grey-med", label: "Unknown" },
+        ].map(({ color, label }) => (
+          <span key={label} className="flex items-center gap-1 text-xs text-grey">
+            <span className={`w-2 h-2 rounded-full ${color} inline-block`} />
+            {label}
+          </span>
+        ))}
       </div>
     </div>
   );

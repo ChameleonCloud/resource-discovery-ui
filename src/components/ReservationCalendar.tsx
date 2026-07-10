@@ -86,12 +86,12 @@ interface Bar {
 interface Props {
   nodes: SearchNodeItem[];
   siteMap: Map<string, { name: string }>;
+  groupBy: "type" | "individual";
   onNodeClick?: (node: SearchNodeItem) => void;
 }
 
-export function ReservationCalendar({ nodes, siteMap, onNodeClick }: Props) {
+export function ReservationCalendar({ nodes, siteMap, groupBy, onNodeClick }: Props) {
   const [viewMode, setViewMode] = useState<ViewMode>("month");
-  const [groupBy, setGroupBy] = useState<"type" | "individual">("type");
   const [anchor, setAnchor] = useState<Date>(() => new Date());
   const [tooltip, setTooltip] = useState<string | null>(null);
   const [tooltipPos, setTooltipPos] = useState({ x: 0, y: 0 });
@@ -110,6 +110,7 @@ export function ReservationCalendar({ nodes, siteMap, onNodeClick }: Props) {
   });
 
   const loadedCount = queries.filter((q) => !q.isLoading).length;
+  const pendingCount = nodes.length - loadedCount;
 
   const nodeReservations = useMemo(() => {
     const map = new Map<string, Reservation[]>();
@@ -204,24 +205,11 @@ export function ReservationCalendar({ nodes, siteMap, onNodeClick }: Props) {
           </button>
         </div>
         <span className="text-xs font-medium text-grey-dark ml-1">{rangeLabel(viewMode, rangeStart, rangeEnd)}</span>
-        <div className="flex items-center gap-2 ml-auto">
-          {loadedCount < nodes.length && (
-            <span className="text-[10px] text-grey-med">
-              Loading {loadedCount} / {nodes.length} nodes…
-            </span>
-          )}
-          <div className="flex rounded border border-grey-light overflow-hidden text-xs flex-shrink-0">
-            {(["type", "individual"] as const).map((view) => (
-              <button
-                key={view}
-                onClick={() => setGroupBy(view)}
-                className={`px-3 py-1 transition-colors ${groupBy === view ? "bg-brand-info text-white" : "bg-white text-grey hover:bg-grey-lighter"}`}
-              >
-                {view === "type" ? "By Node Type" : "Individual Nodes"}
-              </button>
-            ))}
-          </div>
-        </div>
+        {pendingCount > 0 && (
+          <span className="text-xs text-grey-med ml-auto">
+            Loading {pendingCount} / {nodes.length} nodes…
+          </span>
+        )}
       </div>
 
       <div className="overflow-x-auto">
@@ -272,7 +260,7 @@ export function ReservationCalendar({ nodes, siteMap, onNodeClick }: Props) {
             const site = siteMap.get(groupNodes[0].site_id);
             const groupLabel = (
               <div
-                className="text-[10px] font-semibold text-grey-dark uppercase tracking-wide bg-grey-lighter px-1 py-0.5 rounded sticky left-0"
+                className="text-xs font-semibold text-grey-dark uppercase tracking-wide bg-grey-lighter px-1 py-0.5 rounded sticky left-0"
                 style={{ width: LABEL_W + trackWidth }}
               >
                 {groupNodes[0].node_type}
@@ -328,7 +316,7 @@ export function ReservationCalendar({ nodes, siteMap, onNodeClick }: Props) {
                     <div key={node.uid} className="flex items-center" style={{ height: 24 }}>
                       <div
                         style={{ width: LABEL_W, flexShrink: 0, position: "sticky", left: 0, zIndex: 1 }}
-                        className="text-[10px] text-grey truncate pr-2 bg-white cursor-pointer hover:text-link"
+                        className="text-xs text-grey truncate pr-2 bg-white cursor-pointer hover:text-link"
                         title={node.node_name || node.uid}
                         onClick={() => onNodeClick?.(node)}
                       >
@@ -370,7 +358,7 @@ export function ReservationCalendar({ nodes, siteMap, onNodeClick }: Props) {
 
       {tooltip && (
         <div
-          className="fixed z-50 bg-grey-dark text-white text-[10px] rounded px-2 py-1 pointer-events-none shadow-lg whitespace-nowrap"
+          className="fixed z-50 bg-grey-dark text-white text-xs rounded px-2 py-1 pointer-events-none shadow-lg whitespace-nowrap"
           style={{ left: tooltipPos.x + 12, top: tooltipPos.y - 8 }}
         >
           {tooltip}

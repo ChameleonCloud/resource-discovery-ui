@@ -2,14 +2,12 @@ import type { SearchNodeItem } from "../api/types";
 import { RAM_TIERS } from "./availability";
 
 export interface FilterState {
-  sites: Set<string>;
-  nodeTypes: Set<string>;
   hasGpu: boolean | null;
   gpuModels: Set<string>;
   arch: string | null;
   minRam: number | null;
   infiniband: boolean;
-  resourceType: "all" | "bare-metal";
+  resourceType: "all" | "bare-metal" | "vms";
   availabilityWindow: "now" | "7d" | "custom"; // when a lease would start
   customStart: string;   // datetime-local string; empty = now
   customDuration: string; // hours, for custom window only: "1"|"6"|"24"|"72"|"168"|"336"|""; empty = unset
@@ -45,8 +43,6 @@ export interface FilterState {
 }
 
 export const DEFAULT_FILTERS: FilterState = {
-  sites: new Set(),
-  nodeTypes: new Set(),
   hasGpu: null,
   gpuModels: new Set(),
   arch: null,
@@ -90,12 +86,24 @@ export function applyTextQuery(nodes: SearchNodeItem[], query: string): SearchNo
   if (!query.trim()) return nodes;
   const q = query.toLowerCase();
   return nodes.filter((n) => {
-    const gpuModel = n.gpu?.gpu_model?.toLowerCase() ?? "";
     const ram = n.main_memory?.ram_size ? String(Math.round(n.main_memory.ram_size / 1024 ** 3)) : "";
     return (
+      n.uid.toLowerCase().includes(q) ||
       n.node_type.toLowerCase().includes(q) ||
+      (n.node_name?.toLowerCase().includes(q) ?? false) ||
       n.site_id.toLowerCase().includes(q) ||
-      gpuModel.includes(q) ||
+      n.cluster_id.toLowerCase().includes(q) ||
+      (n.processor?.model?.toLowerCase().includes(q) ?? false) ||
+      (n.processor?.other_description?.toLowerCase().includes(q) ?? false) ||
+      (n.processor?.vendor?.toLowerCase().includes(q) ?? false) ||
+      (q === "gpu" && (n.gpu?.gpu ?? false)) ||
+      (n.gpu?.gpu_model?.toLowerCase().includes(q) ?? false) ||
+      (n.gpu?.gpu_vendor?.toLowerCase().includes(q) ?? false) ||
+      (q === "infiniband" && (n.infiniband ?? false)) ||
+      (q === "ssd" && hasSsd(n)) ||
+      (q === "nvme" && hasNvme(n)) ||
+      (n.fpga?.board_model?.toLowerCase().includes(q) ?? false) ||
+      (n.fpga?.board_vendor?.toLowerCase().includes(q) ?? false) ||
       (n.architecture?.platform_type?.toLowerCase().includes(q) ?? false) ||
       ram.includes(q) ||
       (n.admin_note?.toLowerCase().includes(q) ?? false)
@@ -103,7 +111,7 @@ export function applyTextQuery(nodes: SearchNodeItem[], query: string): SearchNo
   });
 }
 
-function hasNvme(n: SearchNodeItem): boolean {
+export function hasNvme(n: SearchNodeItem): boolean {
   return (n.storage_devices ?? []).some(
     (d) =>
       d.driver?.toLowerCase() === "nvme" ||
@@ -112,8 +120,8 @@ function hasNvme(n: SearchNodeItem): boolean {
   );
 }
 
-function hasSsd(n: SearchNodeItem): boolean {
-  return (n.storage_devices ?? []).some((d) => d.ssd === true);
+export function hasSsd(n: SearchNodeItem): boolean {
+  return (n.storage_devices ?? []).some((d) => d.ssd === true) || hasNvme(n);
 }
 
 export function activeDeviceCount(n: SearchNodeItem): number {
@@ -140,8 +148,6 @@ export function applyFilters(nodes: SearchNodeItem[], f: FilterState): SearchNod
   return nodes.filter((n) => {
     const noAvailabilityFilter = f.availabilityWindow !== "custom" && f.duration === "any";
     if (!noAvailabilityFilter && n.availability === "maintenance") return false;
-    if (f.sites.size > 0 && !f.sites.has(n.site_id)) return false;
-    if (f.nodeTypes.size > 0 && !f.nodeTypes.has(n.node_type)) return false;
     if (f.hasGpu !== null && (n.gpu?.gpu ?? false) !== f.hasGpu) return false;
     if (f.gpuModels.size > 0 && !f.gpuModels.has(n.gpu?.gpu_model ?? "")) return false;
     if (f.arch && n.architecture?.platform_type !== f.arch) return false;
@@ -178,7 +184,7 @@ export function applyFilters(nodes: SearchNodeItem[], f: FilterState): SearchNod
   });
 }
 
-type FacetKey = "site" | "nodeType" | "hasGpu" | "gpuModel" | "arch" | "ram" | "infiniband";
+type FacetKey = "hasGpu" | "gpuModel" | "arch" | "ram" | "infiniband";
 
 export function computeFacetCount(
   all: SearchNodeItem[],
@@ -193,8 +199,6 @@ export function computeFacetCount(
 
 function clearFacet(f: FilterState, facet: FacetKey): FilterState {
   switch (facet) {
-    case "site": return { ...f, sites: new Set() };
-    case "nodeType": return { ...f, nodeTypes: new Set() };
     case "hasGpu": return { ...f, hasGpu: null, gpuModels: new Set() };
     case "gpuModel": return { ...f, gpuModels: new Set() };
     case "arch": return { ...f, arch: null };
@@ -205,8 +209,6 @@ function clearFacet(f: FilterState, facet: FacetKey): FilterState {
 
 function matchesFacet(n: SearchNodeItem, facet: FacetKey, value: string | boolean | number): boolean {
   switch (facet) {
-    case "site": return n.site_id === value;
-    case "nodeType": return n.node_type === value;
     case "hasGpu": return (n.gpu?.gpu ?? false) === value;
     case "gpuModel": return (n.gpu?.gpu_model ?? "") === value;
     case "arch": return (n.architecture?.platform_type ?? "") === value;
@@ -273,7 +275,8 @@ export function hasAnyAdvancedFilter(f: FilterState): boolean {
   );
 }
 
-export function formatBytes(n: number): string {
+export function formatBytes(n?: number): string {
+  if (n == null) return "—";
   if (n >= 1024 ** 3) return `${(n / 1024 ** 3).toFixed(0)} GB`;
   if (n >= 1024 ** 2) return `${(n / 1024 ** 2).toFixed(0)} MB`;
   if (n >= 1024) return `${(n / 1024).toFixed(0)} KB`;
@@ -322,12 +325,10 @@ export function getActiveFilterChips(f: FilterState): FilterChip[] {
   if (f.resourceType !== DEFAULT_FILTERS.resourceType) {
     chips.push({
       id: "resourceType",
-      label: "Resource: Bare metal",
+      label: f.resourceType === "vms" ? "Resource: Virtual machines" : "Resource: Bare metal",
       clear: (cur) => ({ ...cur, resourceType: "all" }),
     });
   }
-
-  chips.push(...setChips(f.nodeTypes, "nodeTypes", "Type", (v) => v));
 
   if (f.hasGpu === true) {
     chips.push({ id: "hasGpu", label: "Has GPU", clear: (cur) => ({ ...cur, hasGpu: null, gpuModels: new Set() }) });
