@@ -1,7 +1,7 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import * as Checkbox from "@radix-ui/react-checkbox";
-import type { SearchNodeItem } from "../api/types";
-import type { FilterState } from "../lib/filterCounts";
+import type { SearchNodeItem, VmFlavor } from "../api/types";
+import type { FilterState } from "../lib/filters";
 import {
   computeFacetCount,
   countWhere,
@@ -10,18 +10,25 @@ import {
   hasAnyAdvancedFilter,
   activeDeviceCount,
   hasGpuDirect,
+  hasNvme,
+  hasSsd,
   hasNvmeOf,
   DEFAULT_FILTERS,
   formatBytes,
   formatHz,
-} from "../lib/filterCounts";
+} from "../lib/filters";
+import type { FlavorFilterState } from "../lib/flavorFilters";
+import { DEFAULT_FLAVOR_FILTERS, VCPU_TIERS, RAM_FLAVOR_TIERS, DISK_FLAVOR_TIERS, COST_TIERS, applyFlavorFilters } from "../lib/flavorFilters";
 import { RAM_TIERS } from "../lib/availability";
-import { ComingSoonOverlay } from "./ComingSoonOverlay";
+import { KVM_ENABLED } from "../lib/sites";
 
 interface Props {
   all: SearchNodeItem[];
   filters: FilterState;
   onFiltersChange: (f: FilterState) => void;
+  flavors: VmFlavor[];
+  flavorFilters: FlavorFilterState;
+  onFlavorFiltersChange: (f: FlavorFilterState) => void;
 }
 
 function FacetCheckbox({
@@ -65,10 +72,13 @@ function FacetCheckbox({
   );
 }
 
-function Section({ title, children }: { title: string; children: React.ReactNode }) {
+function Section({ title, action, children }: { title: string; action?: React.ReactNode; children: React.ReactNode }) {
   return (
     <div className="border-b border-grey-light pb-4 mb-4 last:border-0 last:mb-0 last:pb-0">
-      <h3 className="text-xs font-semibold uppercase tracking-wider text-grey mb-2">{title}</h3>
+      <div className="flex items-center justify-between mb-2">
+        <h3 className="text-xs font-semibold uppercase tracking-wider text-grey">{title}</h3>
+        {action}
+      </div>
       {children}
     </div>
   );
@@ -139,8 +149,9 @@ const MAX_WIDTH = 800;
 const DEFAULT_WIDTH = 224;
 const WIDTH_STORAGE_KEY = "filterSidebarWidth";
 
-export function FilterSidebar({ all, filters, onFiltersChange }: Props) {
+export function FilterSidebar({ all, filters, onFiltersChange, flavors, flavorFilters, onFlavorFiltersChange }: Props) {
   const [showAdvanced, setShowAdvanced] = useState(false);
+  const [filterTab, setFilterTab] = useState<"bare-metal" | "flavors">("bare-metal");
   const [width, setWidth] = useState(() => {
     const stored = Number(localStorage.getItem(WIDTH_STORAGE_KEY));
     return Number.isFinite(stored) && stored >= MIN_WIDTH && stored <= MAX_WIDTH ? stored : DEFAULT_WIDTH;
@@ -183,38 +194,51 @@ export function FilterSidebar({ all, filters, onFiltersChange }: Props) {
     localStorage.setItem(WIDTH_STORAGE_KEY, String(width));
   }, [width]);
 
-  const gpuModels = uniqueValues(
-    all.filter((n) => n.gpu?.gpu),
-    (n) => n.gpu?.gpu_model,
-  ).filter((m): m is string => !!m);
+  useEffect(() => {
+    if (filters.resourceType === "vms") setFilterTab("flavors");
+    else if (filters.resourceType === "bare-metal") setFilterTab("bare-metal");
+  }, [filters.resourceType]);
 
-  const archs = uniqueValues(all, (n) => n.architecture?.platform_type).filter(
-    (a): a is string => !!a,
-  );
-
-  const cpuModels = uniqueValues(all, (n) => n.processor?.other_description ?? n.processor?.model).filter(Boolean) as string[];
-  const cpuVendors = uniqueValues(all, (n) => n.processor?.vendor).filter(Boolean) as string[];
-  const cpuClockSpeeds = uniqueValues(all, (n) => n.processor?.clock_speed).filter((v): v is number => v != null);
-  const cpuCacheL1d = uniqueValues(all, (n) => n.processor?.cache_l1d).filter((v): v is number => v != null);
-  const cpuCacheL1i = uniqueValues(all, (n) => n.processor?.cache_l1i).filter((v): v is number => v != null);
-  const cpuCacheL2 = uniqueValues(all, (n) => n.processor?.cache_l2).filter((v): v is number => v != null);
-  const cpuCacheL3 = uniqueValues(all, (n) => n.processor?.cache_l3).filter((v): v is number => v != null);
-  const cpuVersions = uniqueValues(all, (n) => n.processor?.version).filter(Boolean) as string[];
-  const cpuOtherDescriptions = uniqueValues(all, (n) => n.processor?.other_description).filter(Boolean) as string[];
-  const gpuCounts = uniqueValues(all.filter((n) => n.gpu?.gpu), (n) => n.gpu?.gpu_count).filter((v): v is number => v != null);
-  const gpuVendors = uniqueValues(all.filter((n) => n.gpu?.gpu), (n) => n.gpu?.gpu_vendor).filter(Boolean) as string[];
-  const gpuMemories = uniqueValues(all.filter((n) => n.gpu?.gpu), (n) => n.gpu?.gpu_memory).filter((v): v is number => v != null);
-  const fpgaBoardModels = uniqueValues(all.filter((n) => n.fpga?.fpga), (n) => n.fpga?.board_model).filter(Boolean) as string[];
-  const fpgaBoardVendors = uniqueValues(all.filter((n) => n.fpga?.fpga), (n) => n.fpga?.board_vendor).filter(Boolean) as string[];
-  const netModels = uniqueNestedValues(all, (n) => (n.network_adapters ?? []).map((a) => a.model));
-  const netVendors = uniqueNestedValues(all, (n) => (n.network_adapters ?? []).map((a) => a.vendor));
-  const netNames = uniqueNestedValues(all, (n) => (n.network_adapters ?? []).map((a) => a.device));
-  const activeDeviceCounts = uniqueValues(all, (n) => activeDeviceCount(n));
-  const storageModels = uniqueNestedValues(all, (n) => (n.storage_devices ?? []).map((d) => d.model));
-  const storageVendors = uniqueNestedValues(all, (n) => (n.storage_devices ?? []).map((d) => d.vendor));
-  const storageSerials = uniqueNestedValues(all, (n) => (n.storage_devices ?? []).map((d) => d.serial));
-  const storageWwns = uniqueNestedValues(all, (n) => (n.storage_devices ?? []).map((d) => d.wwn));
-  const racks = uniqueValues(all, (n) => n.placement?.rack).filter((v) => v != null).map(String);
+  const {
+    gpuModels, archs, cpuModels, cpuVendors, cpuClockSpeeds,
+    cpuCacheL1d, cpuCacheL1i, cpuCacheL2, cpuCacheL3, cpuVersions,
+    cpuOtherDescriptions, gpuCounts, gpuVendors, gpuMemories,
+    fpgaBoardModels, fpgaBoardVendors, netModels, netVendors,
+    netNames, activeDeviceCounts, storageModels, storageVendors,
+    storageSerials, storageWwns, nvmeCount, ssdCount, racks,
+  } = useMemo(() => {
+    const gpuNodes = all.filter((n) => n.gpu?.gpu);
+    const fpgaNodes = all.filter((n) => n.fpga?.fpga);
+    return {
+      gpuModels: uniqueValues(gpuNodes, (n) => n.gpu?.gpu_model).filter((m): m is string => !!m),
+      archs: uniqueValues(all, (n) => n.architecture?.platform_type).filter((a): a is string => !!a),
+      cpuModels: uniqueValues(all, (n) => n.processor?.other_description ?? n.processor?.model).filter(Boolean) as string[],
+      cpuVendors: uniqueValues(all, (n) => n.processor?.vendor).filter(Boolean) as string[],
+      cpuClockSpeeds: uniqueValues(all, (n) => n.processor?.clock_speed).filter((v): v is number => v != null),
+      cpuCacheL1d: uniqueValues(all, (n) => n.processor?.cache_l1d).filter((v): v is number => v != null),
+      cpuCacheL1i: uniqueValues(all, (n) => n.processor?.cache_l1i).filter((v): v is number => v != null),
+      cpuCacheL2: uniqueValues(all, (n) => n.processor?.cache_l2).filter((v): v is number => v != null),
+      cpuCacheL3: uniqueValues(all, (n) => n.processor?.cache_l3).filter((v): v is number => v != null),
+      cpuVersions: uniqueValues(all, (n) => n.processor?.version).filter(Boolean) as string[],
+      cpuOtherDescriptions: uniqueValues(all, (n) => n.processor?.other_description).filter(Boolean) as string[],
+      gpuCounts: uniqueValues(gpuNodes, (n) => n.gpu?.gpu_count).filter((v): v is number => v != null),
+      gpuVendors: uniqueValues(gpuNodes, (n) => n.gpu?.gpu_vendor).filter(Boolean) as string[],
+      gpuMemories: uniqueValues(gpuNodes, (n) => n.gpu?.gpu_memory).filter((v): v is number => v != null),
+      fpgaBoardModels: uniqueValues(fpgaNodes, (n) => n.fpga?.board_model).filter(Boolean) as string[],
+      fpgaBoardVendors: uniqueValues(fpgaNodes, (n) => n.fpga?.board_vendor).filter(Boolean) as string[],
+      netModels: uniqueNestedValues(all, (n) => (n.network_adapters ?? []).map((a) => a.model)),
+      netVendors: uniqueNestedValues(all, (n) => (n.network_adapters ?? []).map((a) => a.vendor)),
+      netNames: uniqueNestedValues(all, (n) => (n.network_adapters ?? []).map((a) => a.device)),
+      activeDeviceCounts: uniqueValues(all, (n) => activeDeviceCount(n)),
+      storageModels: uniqueNestedValues(all, (n) => (n.storage_devices ?? []).map((d) => d.model)),
+      storageVendors: uniqueNestedValues(all, (n) => (n.storage_devices ?? []).map((d) => d.vendor)),
+      storageSerials: uniqueNestedValues(all, (n) => (n.storage_devices ?? []).map((d) => d.serial)),
+      storageWwns: uniqueNestedValues(all, (n) => (n.storage_devices ?? []).map((d) => d.wwn)),
+      nvmeCount: countWhere(all, hasNvme),
+      ssdCount: countWhere(all, hasSsd),
+      racks: uniqueValues(all, (n) => n.placement?.rack).filter((v) => v != null).map(String),
+    };
+  }, [all]);
 
   function toggleSet(set: Set<string>, value: string): Set<string> {
     const next = new Set(set);
@@ -231,7 +255,6 @@ export function FilterSidebar({ all, filters, onFiltersChange }: Props) {
   }
 
   const isFiltered =
-    filters.nodeTypes.size > 0 ||
     filters.hasGpu !== null ||
     filters.gpuModels.size > 0 ||
     filters.arch !== null ||
@@ -240,7 +263,25 @@ export function FilterSidebar({ all, filters, onFiltersChange }: Props) {
     filters.resourceType !== DEFAULT_FILTERS.resourceType ||
     filters.availabilityWindow !== DEFAULT_FILTERS.availabilityWindow ||
     filters.duration !== DEFAULT_FILTERS.duration ||
-    hasAnyAdvancedFilter(filters);
+    hasAnyAdvancedFilter(filters) ||
+    flavorFilters.hasGpu ||
+    flavorFilters.minVcpus !== null ||
+    flavorFilters.minRamBytes !== null ||
+    flavorFilters.minDiskBytes !== null ||
+    flavorFilters.maxSuPerHour !== null;
+
+  const anyBmSpecificFilter =
+    filters.hasGpu !== null || filters.gpuModels.size > 0 ||
+    filters.arch !== null || filters.minRam !== null || filters.infiniband ||
+    filters.availabilityWindow !== DEFAULT_FILTERS.availabilityWindow ||
+    filters.duration !== DEFAULT_FILTERS.duration || hasAnyAdvancedFilter(filters);
+
+  const anyVmSpecificFilter =
+    flavorFilters.hasGpu || flavorFilters.minVcpus !== null || flavorFilters.minRamBytes !== null ||
+    flavorFilters.minDiskBytes !== null || flavorFilters.maxSuPerHour !== null;
+
+  const showBmFilters = !KVM_ENABLED || filterTab === "bare-metal";
+  const showVmFilters = KVM_ENABLED && filterTab === "flavors";
 
   return (
     <aside
@@ -254,42 +295,116 @@ export function FilterSidebar({ all, filters, onFiltersChange }: Props) {
         className={`absolute top-0 right-0 h-full w-1.5 cursor-col-resize hover:bg-brand-info/40 ${isResizing ? "bg-brand-info/40" : ""}`}
       />
       <div className="p-4 overflow-y-auto h-full">
-      <div className="flex items-center justify-between mb-4">
-        <span className="text-xs font-semibold uppercase tracking-wider text-grey">Filters</span>
-        {isFiltered && (
+      <Section
+        title="Resource Type"
+        action={isFiltered ? (
           <button
-            onClick={() => onFiltersChange(DEFAULT_FILTERS)}
+            onClick={() => {
+              onFiltersChange(DEFAULT_FILTERS);
+              onFlavorFiltersChange(DEFAULT_FLAVOR_FILTERS);
+            }}
             className="text-xs text-link hover:text-link-hover transition-colors"
           >
             Reset all
           </button>
-        )}
-      </div>
-      <Section title="Resource Type">
-        {(["All", "Bare metal"] as const).map((type) => {
-          const value = type === "All" ? "all" : "bare-metal";
+        ) : undefined}
+      >
+        {(() => {
+          const idx = filters.resourceType === "bare-metal" ? 0 : filters.resourceType === "vms" ? 2 : 1;
+          const activePct = idx * 0.5;
+          // w-5 = 1.25rem; rail is inset by 0.625rem (half thumb) on each side
+          const thumbLeftStyle = `calc(${activePct * 100}% - ${activePct * 1.25}rem)`;
+          const moveTo = (target: FilterState["resourceType"]) => {
+            if (target === "vms" && !KVM_ENABLED) return;
+            onFiltersChange({ ...filters, resourceType: target });
+          };
           return (
-            <label key={type} className="flex items-center gap-2 py-0.5 cursor-pointer text-sm text-grey-dark hover:text-link">
-              <input
-                type="radio"
-                name="resource-type"
-                value={type}
-                className="accent-brand-info"
-                checked={filters.resourceType === value}
-                onChange={() => onFiltersChange({ ...filters, resourceType: value })}
-              />
-              {type}
-            </label>
+            <div className="py-2">
+              <div
+                className="relative h-6 cursor-pointer select-none"
+                onClick={(e) => {
+                  const rect = e.currentTarget.getBoundingClientRect();
+                  const pct = (e.clientX - rect.left) / rect.width;
+                  moveTo(pct < 0.25 ? "bare-metal" : pct < 0.75 ? "all" : "vms");
+                }}
+              >
+                <div className="absolute top-1/2 -translate-y-1/2 inset-x-[0.625rem] h-2.5 bg-grey-light rounded-full" />
+                <div
+                  className={`absolute top-1/2 -translate-y-1/2 w-5 h-5 rounded-full shadow-md border-2 border-white transition-all duration-200 ${idx === 2 ? "bg-purple-600" : "bg-brand-info"}`}
+                  style={{ left: thumbLeftStyle }}
+                />
+              </div>
+              <div className="flex text-xs mt-1">
+                <button
+                  onClick={() => moveTo("bare-metal")}
+                  className={`flex-1 text-left transition-colors ${idx === 0 ? "text-brand-info font-medium" : "text-grey hover:text-grey-dark"}`}
+                >
+                  Bare Metal
+                </button>
+                <button
+                  onClick={() => moveTo("all")}
+                  className={`flex-1 text-center transition-colors ${idx === 1 ? "text-brand-info font-medium" : "text-grey hover:text-grey-dark"}`}
+                >
+                  All
+                </button>
+                <button
+                  onClick={() => moveTo("vms")}
+                  title={!KVM_ENABLED ? "Virtual machines are not available" : undefined}
+                  className={`flex-1 text-right transition-colors ${
+                    !KVM_ENABLED
+                      ? "text-grey-med cursor-not-allowed"
+                      : idx === 2
+                      ? "text-purple-600 font-medium"
+                      : "text-grey hover:text-grey-dark"
+                  }`}
+                >
+                  Virtual Machines
+                </button>
+              </div>
+            </div>
           );
-        })}
-        <ComingSoonOverlay label="VM support coming soon">
-          <label className="flex items-center gap-2 py-0.5 text-sm">
-            <input type="radio" name="resource-type" value="VMs" disabled className="accent-brand-info" />
-            Virtual machines
-          </label>
-        </ComingSoonOverlay>
+        })()}
       </Section>
 
+      {KVM_ENABLED && (
+        <div className="flex border-b border-grey-light mb-4">
+          <button
+            onClick={() => filters.resourceType !== "vms" && setFilterTab("bare-metal")}
+            title={filters.resourceType === "vms" ? "Enable bare metal to switch to these filters" : undefined}
+            className={`flex items-center gap-1.5 px-3 py-2 text-xs font-medium border-b-2 -mb-px ${
+              filters.resourceType === "vms"
+                ? "border-transparent text-grey-med cursor-not-allowed"
+                : filterTab === "bare-metal"
+                ? "border-brand-info text-brand-info transition-colors"
+                : "border-transparent text-grey hover:text-grey-dark transition-colors"
+            }`}
+          >
+            Bare Metal
+            {filters.resourceType !== "vms" && anyBmSpecificFilter && filterTab !== "bare-metal" && (
+              <span className="w-1.5 h-1.5 rounded-full bg-blue-400 flex-shrink-0" />
+            )}
+          </button>
+          <button
+            onClick={() => filters.resourceType !== "bare-metal" && setFilterTab("flavors")}
+            title={filters.resourceType === "bare-metal" ? "Enable virtual machines to switch to these filters" : undefined}
+            className={`flex items-center gap-1.5 px-3 py-2 text-xs font-medium border-b-2 -mb-px ${
+              filters.resourceType === "bare-metal"
+                ? "border-transparent text-grey-med cursor-not-allowed"
+                : filterTab === "flavors"
+                ? "border-purple-500 text-purple-600 transition-colors"
+                : "border-transparent text-grey hover:text-grey-dark transition-colors"
+            }`}
+          >
+            Virtual Machines
+            {filters.resourceType !== "bare-metal" && anyVmSpecificFilter && filterTab !== "flavors" && (
+              <span className="w-1.5 h-1.5 rounded-full bg-purple-400 flex-shrink-0" />
+            )}
+          </button>
+        </div>
+      )}
+
+      {showBmFilters && (
+      <>
       <Section title="Availability">
         <div className="flex flex-wrap items-center gap-1.5 text-sm text-grey-dark">
           <span>Available</span>
@@ -478,7 +593,7 @@ export function FilterSidebar({ all, filters, onFiltersChange }: Props) {
         />
       </Section>
 
-      <div className="border-t border-grey-light pt-4">
+      <div className="pt-4">
         <button
           onClick={() => setShowAdvanced((v) => !v)}
           className="flex items-center justify-between w-full text-xs font-semibold uppercase tracking-wider text-grey hover:text-grey-dark"
@@ -786,7 +901,7 @@ export function FilterSidebar({ all, filters, onFiltersChange }: Props) {
               </GroupSection>
             )}
 
-            {(storageModels.length > 0 || storageVendors.length > 0) && (
+            {(storageModels.length > 0 || storageVendors.length > 0 || nvmeCount > 0 || ssdCount > 0) && (
               <GroupSection label="Storage">
                 {storageModels.length > 0 && (
                   <div className="mb-2">
@@ -816,28 +931,25 @@ export function FilterSidebar({ all, filters, onFiltersChange }: Props) {
                   </div>
                 )}
 
-                <FacetCheckbox
-                  id="nvme-only"
-                  label="NVMe only"
-                  count={countWhere(all, (n) =>
-                    (n.storage_devices ?? []).some(
-                      (d) =>
-                        d.driver?.toLowerCase() === "nvme" ||
-                        d.interface?.toLowerCase().includes("nvme") ||
-                        (d.device?.toLowerCase().startsWith("nvme") ?? false),
-                    ),
-                  )}
-                  checked={filters.nvmeOnly}
-                  onCheckedChange={(v) => onFiltersChange({ ...filters, nvmeOnly: !!v })}
-                />
+                {nvmeCount > 0 && (
+                  <FacetCheckbox
+                    id="nvme-only"
+                    label="NVMe only"
+                    count={nvmeCount}
+                    checked={filters.nvmeOnly}
+                    onCheckedChange={(v) => onFiltersChange({ ...filters, nvmeOnly: !!v })}
+                  />
+                )}
 
-                <FacetCheckbox
-                  id="ssd-only"
-                  label="SSD only"
-                  count={countWhere(all, (n) => (n.storage_devices ?? []).some((d) => d.ssd === true))}
-                  checked={filters.ssdOnly}
-                  onCheckedChange={(v) => onFiltersChange({ ...filters, ssdOnly: !!v })}
-                />
+                {ssdCount > 0 && (
+                  <FacetCheckbox
+                    id="ssd-only"
+                    label="SSD only"
+                    count={ssdCount}
+                    checked={filters.ssdOnly}
+                    onCheckedChange={(v) => onFiltersChange({ ...filters, ssdOnly: !!v })}
+                  />
+                )}
 
                 {storageSerials.length > 0 && (
                   <div className="mb-2">
@@ -888,6 +1000,163 @@ export function FilterSidebar({ all, filters, onFiltersChange }: Props) {
           </div>
         )}
       </div>
+      </>
+      )}
+
+      {showVmFilters && (
+      <>
+
+        <Section title="GPU">
+          <FacetCheckbox
+            id="flavor-gpu"
+            label="Has GPU"
+            count={applyFlavorFilters(flavors, { ...flavorFilters, hasGpu: false }).filter((f) => f.gpu?.gpu ?? false).length}
+            checked={flavorFilters.hasGpu}
+            onCheckedChange={(v) => onFlavorFiltersChange({ ...flavorFilters, hasGpu: !!v })}
+          />
+        </Section>
+
+        <Section title="vCPUs">
+          <label className="flex items-center gap-2 py-0.5 cursor-pointer text-sm text-grey-dark hover:text-link">
+            <input
+              type="radio"
+              name="flavor-min-vcpu"
+              checked={flavorFilters.minVcpus === null}
+              onChange={() => onFlavorFiltersChange({ ...flavorFilters, minVcpus: null })}
+              className="accent-purple-600"
+            />
+            Any
+          </label>
+          {VCPU_TIERS.map(({ label, vcpus }) => {
+            const count = applyFlavorFilters(flavors, { ...flavorFilters, minVcpus: null }).filter((f) => f.vcpus >= vcpus).length;
+            return (
+              <label
+                key={vcpus}
+                className={`flex items-center justify-between gap-2 py-0.5 cursor-pointer text-sm ${count === 0 ? "text-grey-med" : "text-grey-dark hover:text-link"}`}
+              >
+                <span className="flex items-center gap-2">
+                  <input
+                    type="radio"
+                    name="flavor-min-vcpu"
+                    checked={flavorFilters.minVcpus === vcpus}
+                    onChange={() => count > 0 && onFlavorFiltersChange({ ...flavorFilters, minVcpus: vcpus })}
+                    disabled={count === 0}
+                    className="accent-purple-600"
+                  />
+                  {label}
+                </span>
+                <span className="text-xs tabular-nums text-grey">({count})</span>
+              </label>
+            );
+          })}
+        </Section>
+
+        <Section title="Minimum RAM">
+          <label className="flex items-center gap-2 py-0.5 cursor-pointer text-sm text-grey-dark hover:text-link">
+            <input
+              type="radio"
+              name="flavor-min-ram"
+              checked={flavorFilters.minRamBytes === null}
+              onChange={() => onFlavorFiltersChange({ ...flavorFilters, minRamBytes: null })}
+              className="accent-purple-600"
+            />
+            Any
+          </label>
+          {RAM_FLAVOR_TIERS.map(({ label, bytes }) => {
+            const count = applyFlavorFilters(flavors, { ...flavorFilters, minRamBytes: null }).filter((f) => f.ram_size >= bytes).length;
+            return (
+              <label
+                key={bytes}
+                className={`flex items-center justify-between gap-2 py-0.5 cursor-pointer text-sm ${count === 0 ? "text-grey-med" : "text-grey-dark hover:text-link"}`}
+              >
+                <span className="flex items-center gap-2">
+                  <input
+                    type="radio"
+                    name="flavor-min-ram"
+                    checked={flavorFilters.minRamBytes === bytes}
+                    onChange={() => count > 0 && onFlavorFiltersChange({ ...flavorFilters, minRamBytes: bytes })}
+                    disabled={count === 0}
+                    className="accent-purple-600"
+                  />
+                  {label}
+                </span>
+                <span className="text-xs tabular-nums text-grey">({count})</span>
+              </label>
+            );
+          })}
+        </Section>
+
+        <Section title="Minimum Disk">
+          <label className="flex items-center gap-2 py-0.5 cursor-pointer text-sm text-grey-dark hover:text-link">
+            <input
+              type="radio"
+              name="flavor-min-disk"
+              checked={flavorFilters.minDiskBytes === null}
+              onChange={() => onFlavorFiltersChange({ ...flavorFilters, minDiskBytes: null })}
+              className="accent-purple-600"
+            />
+            Any
+          </label>
+          {DISK_FLAVOR_TIERS.map(({ label, bytes }) => {
+            const count = applyFlavorFilters(flavors, { ...flavorFilters, minDiskBytes: null }).filter((f) => f.disk_size >= bytes).length;
+            return (
+              <label
+                key={bytes}
+                className={`flex items-center justify-between gap-2 py-0.5 cursor-pointer text-sm ${count === 0 ? "text-grey-med" : "text-grey-dark hover:text-link"}`}
+              >
+                <span className="flex items-center gap-2">
+                  <input
+                    type="radio"
+                    name="flavor-min-disk"
+                    checked={flavorFilters.minDiskBytes === bytes}
+                    onChange={() => count > 0 && onFlavorFiltersChange({ ...flavorFilters, minDiskBytes: bytes })}
+                    disabled={count === 0}
+                    className="accent-purple-600"
+                  />
+                  {label}
+                </span>
+                <span className="text-xs tabular-nums text-grey">({count})</span>
+              </label>
+            );
+          })}
+        </Section>
+
+        <Section title="Max Cost">
+          <label className="flex items-center gap-2 py-0.5 cursor-pointer text-sm text-grey-dark hover:text-link">
+            <input
+              type="radio"
+              name="flavor-max-cost"
+              checked={flavorFilters.maxSuPerHour === null}
+              onChange={() => onFlavorFiltersChange({ ...flavorFilters, maxSuPerHour: null })}
+              className="accent-purple-600"
+            />
+            Any
+          </label>
+          {COST_TIERS.map(({ label, su }) => {
+            const count = applyFlavorFilters(flavors, { ...flavorFilters, maxSuPerHour: null }).filter((f) => typeof f.su_cost_per_hour === "number" && f.su_cost_per_hour <= su).length;
+            return (
+              <label
+                key={su}
+                className={`flex items-center justify-between gap-2 py-0.5 cursor-pointer text-sm ${count === 0 ? "text-grey-med" : "text-grey-dark hover:text-link"}`}
+              >
+                <span className="flex items-center gap-2">
+                  <input
+                    type="radio"
+                    name="flavor-max-cost"
+                    checked={flavorFilters.maxSuPerHour === su}
+                    onChange={() => count > 0 && onFlavorFiltersChange({ ...flavorFilters, maxSuPerHour: su })}
+                    disabled={count === 0}
+                    className="accent-purple-600"
+                  />
+                  {label}
+                </span>
+                <span className="text-xs tabular-nums text-grey">({count})</span>
+              </label>
+            );
+          })}
+        </Section>
+      </>
+      )}
       </div>
     </aside>
   );

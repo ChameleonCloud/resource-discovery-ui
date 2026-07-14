@@ -27,12 +27,12 @@ export function CartButton({ count }: Props) {
         <path d="M2.05 2.05h2l2.66 12.42a2 2 0 0 0 2 1.58h9.78a2 2 0 0 0 1.95-1.57l1.65-7.43H5.12" />
       </svg>
       {count > 0 && (
-        <span className="absolute -top-1 -right-1 bg-brand-primary text-grey-dark text-[10px] font-bold rounded-full w-4 h-4 flex items-center justify-center leading-none">
+        <span className="absolute -top-1 -right-1 bg-brand-primary text-grey-dark text-xs font-bold rounded-full w-4 h-4 flex items-center justify-center leading-none">
           {count > 99 ? "99+" : count}
         </span>
       )}
-      <span className="text-[10px] text-grey-med leading-none whitespace-nowrap">
-        {count > 0 ? `${count} node${count !== 1 ? "s" : ""} selected` : "Select nodes to reserve"}
+      <span className="text-xs text-grey-med leading-none whitespace-nowrap">
+        {count > 0 ? `${count} resource${count !== 1 ? "s" : ""} selected` : "Select resources to reserve"}
       </span>
     </Link>
   );

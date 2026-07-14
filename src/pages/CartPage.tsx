@@ -1,29 +1,32 @@
 import { useMemo } from "react";
 import { Link } from "react-router-dom";
-import type { SearchNodeItem } from "../api/types";
+import type { VmFlavor } from "../api/types";
+import type { CartItem } from "../hooks/useCart";
 import { useSiteMap } from "../hooks/useSites";
 import { ReservationSnippets } from "../components/ReservationSnippets";
-import type { ReservationWindow } from "../components/ReservationSnippets";
+import type { ReservationWindow, FlavorLine } from "../components/ReservationSnippets";
 import { formatRam } from "../lib/availability";
 import { AVAILABILITY_STYLES, AVAILABILITY_LABELS } from "../components/NodeCard";
 
 interface Props {
-  cart: SearchNodeItem[];
-  onRemove: (uid: string) => void;
+  cart: CartItem[];
+  onRemoveNode: (uid: string) => void;
+  onFlavorCountChange: (siteId: string, flavor: VmFlavor, count: number) => void;
   onClear: () => void;
 }
 
-function groupBySite(nodes: SearchNodeItem[]): Map<string, SearchNodeItem[]> {
-  const map = new Map<string, SearchNodeItem[]>();
-  for (const n of nodes) {
-    const existing = map.get(n.site_id) ?? [];
-    existing.push(n);
-    map.set(n.site_id, existing);
+function groupBySite(cart: CartItem[]): Map<string, CartItem[]> {
+  const map = new Map<string, CartItem[]>();
+  for (const item of cart) {
+    const siteId = item.kind === "node" ? item.node.site_id : item.siteId;
+    const existing = map.get(siteId) ?? [];
+    existing.push(item);
+    map.set(siteId, existing);
   }
   return map;
 }
 
-export function CartPage({ cart, onRemove, onClear }: Props) {
+export function CartPage({ cart, onRemoveNode, onFlavorCountChange, onClear }: Props) {
   const siteMap = useSiteMap();
 
   const reservationWindow = useMemo((): ReservationWindow | null => {
@@ -36,6 +39,7 @@ export function CartPage({ cart, onRemove, onClear }: Props) {
   }, []);
   const bySite = groupBySite(cart);
   const multiSite = bySite.size > 1;
+  const totalUnits = cart.reduce((n, i) => n + (i.kind === "node" ? 1 : i.count), 0);
 
   if (cart.length === 0) {
     return (
@@ -57,11 +61,11 @@ export function CartPage({ cart, onRemove, onClear }: Props) {
       <div className="flex items-center justify-between mb-6 flex-wrap gap-3">
         <div>
           <h1 className="text-xl font-semibold text-grey-dark">
-            Cart — {cart.length} node{cart.length !== 1 ? "s" : ""}
+            Cart — {totalUnits} resource{totalUnits !== 1 ? "s" : ""}
           </h1>
           {multiSite && (
             <p className="text-sm text-grey mt-1">
-              Nodes span {bySite.size} sites — reservation instructions are shown per site below.
+              Resources span {bySite.size} sites — reservation instructions are shown per site below.
             </p>
           )}
         </div>
@@ -82,8 +86,21 @@ export function CartPage({ cart, onRemove, onClear }: Props) {
       </div>
 
       <div className="space-y-8">
-        {Array.from(bySite).map(([siteId, siteNodes]) => {
+        {Array.from(bySite).map(([siteId, items]) => {
           const site = siteMap.get(siteId);
+          const siteNodes = items
+            .filter((i): i is Extract<CartItem, { kind: "node" }> => i.kind === "node")
+            .map((i) => i.node);
+          const siteFlavorItems = items.filter(
+            (i): i is Extract<CartItem, { kind: "flavor" }> => i.kind === "flavor",
+          );
+          const siteFlavorLines: FlavorLine[] = siteFlavorItems.map((i) => ({
+            siteId: i.siteId,
+            flavor: i.flavor,
+            count: i.count,
+          }));
+          const flavorUnitCount = siteFlavorItems.reduce((n, i) => n + i.count, 0);
+
           return (
             <section key={siteId} className="bg-white rounded-lg shadow-sm border border-grey-light overflow-hidden">
               <div className="px-5 py-3 border-b border-grey-light bg-grey-lighter flex items-center justify-between">
@@ -95,39 +112,76 @@ export function CartPage({ cart, onRemove, onClear }: Props) {
                     <p className="text-xs text-grey">{site.location}</p>
                   )}
                 </div>
-                <span className="text-xs text-grey">{siteNodes.length} node{siteNodes.length !== 1 ? "s" : ""}</span>
+                <span className="text-xs text-grey">
+                  {siteNodes.length > 0 && `${siteNodes.length} node${siteNodes.length !== 1 ? "s" : ""}`}
+                  {siteNodes.length > 0 && siteFlavorItems.length > 0 && " · "}
+                  {siteFlavorItems.length > 0 && `${flavorUnitCount} VM instance${flavorUnitCount !== 1 ? "s" : ""}`}
+                </span>
               </div>
 
-              <div className="divide-y divide-grey-light">
-                {siteNodes.map((node) => (
-                  <div key={node.uid} className="px-5 py-3 flex items-center justify-between gap-4">
-                    <div className="min-w-0">
-                      <p className="text-sm font-medium text-grey-dark">{node.node_type}</p>
-                      <p className="text-xs text-grey truncate">
-                        RAM: {formatRam(node.main_memory?.ram_size)}
-                        {node.gpu?.gpu ? ` · GPU: ${node.gpu.gpu_model ?? "Yes"}` : ""}
-                        {node.infiniband ? " · InfiniBand" : ""}
-                      </p>
+              {siteNodes.length > 0 && (
+                <div className="divide-y divide-grey-light">
+                  {siteNodes.map((node) => (
+                    <div key={node.uid} className="px-5 py-3 flex items-center justify-between gap-4">
+                      <div className="min-w-0">
+                        <p className="text-sm font-medium text-grey-dark">{node.node_type}</p>
+                        <p className="text-xs text-grey truncate">
+                          RAM: {formatRam(node.main_memory?.ram_size)}
+                          {node.gpu?.gpu ? ` · GPU: ${node.gpu.gpu_model ?? "Yes"}` : ""}
+                          {node.infiniband ? " · InfiniBand" : ""}
+                        </p>
+                      </div>
+                      <div className="flex items-center gap-3 flex-shrink-0">
+                        <span className={`text-xs px-2 py-0.5 rounded-full font-medium ${AVAILABILITY_STYLES[node.availability] ?? AVAILABILITY_STYLES.unknown}`}>
+                          {AVAILABILITY_LABELS[node.availability] ?? AVAILABILITY_LABELS.unknown}
+                        </span>
+                        <button
+                          onClick={() => onRemoveNode(node.uid)}
+                          className="text-grey-med hover:text-brand-danger transition-colors text-xs"
+                          aria-label={`Remove ${node.node_type} from cart`}
+                        >
+                          ✕
+                        </button>
+                      </div>
                     </div>
-                    <div className="flex items-center gap-3 flex-shrink-0">
-                      <span className={`text-xs px-2 py-0.5 rounded-full font-medium ${AVAILABILITY_STYLES[node.availability] ?? AVAILABILITY_STYLES.unknown}`}>
-                        {AVAILABILITY_LABELS[node.availability] ?? AVAILABILITY_LABELS.unknown}
-                      </span>
-                      <button
-                        onClick={() => onRemove(node.uid)}
-                        className="text-grey-med hover:text-brand-danger transition-colors text-xs"
-                        aria-label={`Remove ${node.node_type} from cart`}
-                      >
-                        ✕
-                      </button>
+                  ))}
+                </div>
+              )}
+
+              {siteFlavorItems.length > 0 && (
+                <div className="divide-y divide-grey-light">
+                  {siteFlavorItems.map((item) => (
+                    <div key={item.flavor.uid} className="px-5 py-3 flex items-center justify-between gap-4">
+                      <div className="min-w-0">
+                        <p className="text-sm font-medium text-grey-dark">
+                          {item.flavor.name} <span className="text-grey-med font-normal">× {item.count}</span>
+                        </p>
+                        <p className="text-xs text-grey truncate">
+                          {item.flavor.vcpus} vCPU · {item.flavor.humanized_ram_size} RAM · {item.flavor.humanized_disk_size} disk
+                          {item.flavor.gpu?.gpu ? ` · GPU: ${item.flavor.gpu.gpu_count ?? 1}` : ""}
+                          {typeof item.flavor.su_cost_per_hour === "number" ? ` · ${item.flavor.su_cost_per_hour} SU/hr` : ""}
+                        </p>
+                      </div>
+                      <div className="flex items-center gap-3 flex-shrink-0">
+                        <span className="text-xs px-2 py-0.5 rounded-full font-medium bg-purple-100 text-purple-700">
+                          Virtual machine
+                        </span>
+                        <button
+                          onClick={() => onFlavorCountChange(item.siteId, item.flavor, 0)}
+                          className="text-grey-med hover:text-brand-danger transition-colors text-xs"
+                          aria-label={`Remove ${item.flavor.name} from cart`}
+                        >
+                          ✕
+                        </button>
+                      </div>
                     </div>
-                  </div>
-                ))}
-              </div>
+                  ))}
+                </div>
+              )}
 
               <div className="px-5 py-4 border-t border-grey-light">
-                <h3 className="text-xs font-semibold uppercase tracking-wider text-grey mb-3">Reserve these nodes</h3>
-                <ReservationSnippets nodes={siteNodes} sites={site ? [site] : undefined} horizonUrl={site?.web} reservationWindow={reservationWindow} />
+                <h3 className="text-xs font-semibold uppercase tracking-wider text-grey mb-3">Reserve these resources</h3>
+                <ReservationSnippets nodes={siteNodes} flavors={siteFlavorLines} sites={site ? [site] : undefined} horizonUrl={site?.web} reservationWindow={reservationWindow} />
               </div>
             </section>
           );

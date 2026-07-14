@@ -3,9 +3,10 @@ import { useRef, useEffect } from "react";
 interface Props {
   value: string;
   onChange: (value: string) => void;
+  onEnter?: () => void;
 }
 
-export function SearchBar({ value, onChange }: Props) {
+export function SearchBar({ value, onChange, onEnter }: Props) {
   const ref = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
@@ -30,6 +31,7 @@ export function SearchBar({ value, onChange }: Props) {
         type="text"
         value={value}
         onChange={(e) => onChange(e.target.value)}
+        onKeyDown={(e) => e.key === "Enter" && onEnter?.()}
         placeholder="Search by node type, GPU, site, architecture…"
         className="w-full pl-10 pr-4 py-2.5 rounded-lg border border-grey-light bg-white text-grey-dark placeholder:text-grey-med focus:outline-none focus:ring-2 focus:ring-brand-info text-base shadow-sm"
         aria-label="Search resources"

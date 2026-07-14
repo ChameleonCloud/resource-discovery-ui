@@ -1,7 +1,8 @@
 import { useState, useMemo, useEffect } from "react";
 import { useQueries } from "@tanstack/react-query";
-import type { SearchNodeItem, Site, NetworkAdapter, StorageDevice } from "../api/types";
+import type { SearchNodeItem, Site, VmFlavor, NetworkAdapter, StorageDevice } from "../api/types";
 import { formatRam, findNextAvailableWindow } from "../lib/availability";
+import { formatBytes } from "../lib/filters";
 import { fetchNodeAvailability } from "../api/client";
 
 type Mode = "cli" | "python" | "horizon";
@@ -11,8 +12,15 @@ export interface ReservationWindow {
   end: string;   // ISO
 }
 
+export interface FlavorLine {
+  siteId: string;
+  flavor: VmFlavor;
+  count: number;
+}
+
 interface Props {
   nodes: SearchNodeItem[];
+  flavors?: FlavorLine[];
   sites?: Site[];
   horizonUrl?: string;
   reservationWindow?: ReservationWindow | null;
@@ -74,33 +82,50 @@ const DURATION_PRESETS = [
 
 type ReserveBy = "type" | "name";
 
-function cliSnippet(nodes: SearchNodeItem[], window?: ReservationWindow | null, reserveBy: ReserveBy = "type", durationHours = 24): string {
+function cliSnippet(
+  nodesBySite: Map<string, SearchNodeItem[]>,
+  flavorsBySite: Map<string, FlavorLine[]>,
+  window?: ReservationWindow | null,
+  reserveBy: ReserveBy = "type",
+  durationHours = 24,
+): string {
   const startDate = window ? `"${fmtCliDate(window.start)}"` : `"now"`;
   const endDate = window ? `"${fmtCliDate(window.end)}"` : `"${endDateFromNow(durationHours)}"`;
 
-  const bySite = groupBySite(nodes);
-  const multiSite = bySite.size > 1;
+  const siteIds = Array.from(new Set([...nodesBySite.keys(), ...flavorsBySite.keys()]));
+  const multiSite = siteIds.length > 1;
   const blocks: string[] = [];
 
-  for (const [siteId, siteNodes] of bySite) {
+  for (const siteId of siteIds) {
+    const siteNodes = nodesBySite.get(siteId) ?? [];
+    const siteFlavors = flavorsBySite.get(siteId) ?? [];
     const leaseName = multiSite ? `my-reservation-${siteId}` : `my-reservation`;
-    let resourceProps: string;
+    const clauses: string[] = [];
+
     if (reserveBy === "name") {
-      resourceProps = siteNodes
-        .map((n) => {
+      clauses.push(
+        ...siteNodes.map((n) => {
           const prop = `["==","$node_name","${n.node_name}"]`;
           return `--reservation resource_type=physical:host,min=1,max=1,resource_properties='${prop}'`;
-        })
-        .join(" \\\n  ");
+        }),
+      );
     } else {
       const counts = countByNodeType(siteNodes);
-      resourceProps = Array.from(counts)
-        .map(([nodeType, count]) => {
+      clauses.push(
+        ...Array.from(counts).map(([nodeType, count]) => {
           const prop = `["==","$node_type","${nodeType}"]`;
           return `--reservation resource_type=physical:host,min=${count},max=${count},resource_properties='${prop}'`;
-        })
-        .join(" \\\n  ");
+        }),
+      );
     }
+
+    clauses.push(
+      ...siteFlavors.map(
+        (f) => `--reservation resource_type=flavor:instance,flavor_id=$(openstack flavor show ${f.flavor.name} -f value -c id),amount=${f.count}`,
+      ),
+    );
+
+    const resourceProps = clauses.join(" \\\n  ");
     blocks.push(
       [
         `openstack reservation lease create \\`,
@@ -114,55 +139,64 @@ function cliSnippet(nodes: SearchNodeItem[], window?: ReservationWindow | null, 
   return blocks.join("\n\n");
 }
 
-function pythonSnippet(nodes: SearchNodeItem[], window?: ReservationWindow | null, siteNameMap?: Map<string, string>, reserveBy: ReserveBy = "type", durationHours = 24): string {
+function pythonSnippet(
+  nodesBySite: Map<string, SearchNodeItem[]>,
+  flavorsBySite: Map<string, FlavorLine[]>,
+  window?: ReservationWindow | null,
+  siteNameMap?: Map<string, string>,
+  reserveBy: ReserveBy = "type",
+  durationHours = 24,
+): string {
   const hasWindow = !!window;
   const lines = [
-    "import chi",
-    "import chi.lease",
+    "from chi import context, lease",
     hasWindow
       ? "from datetime import datetime, timezone"
       : "from datetime import datetime, timedelta, timezone",
     "",
-    "# Reserve nodes via python-chi",
+    "# Reserve resources via python-chi",
     "# Requires: pip install python-chi",
     "",
   ];
 
-  const startArg = window ? `start_date=${fmtPyDate(window.start)},` : null;
-  const endArg = window
-    ? `end_date=${fmtPyDate(window.end)},`
-    : `end_date=datetime.now(timezone.utc) + ${pyTimedelta(durationHours)},`;
-
-  const bySite = groupBySite(nodes);
-  for (const [siteId, siteNodes] of bySite) {
+  const siteIds = Array.from(new Set([...nodesBySite.keys(), ...flavorsBySite.keys()]));
+  const multiSite = siteIds.length > 1;
+  for (const siteId of siteIds) {
+    const siteNodes = nodesBySite.get(siteId) ?? [];
+    const siteFlavors = flavorsBySite.get(siteId) ?? [];
     const chiSiteName = siteNameMap?.get(siteId) ?? siteId;
-    lines.push(`# Site: ${chiSiteName}`);
-    lines.push(`chi.use_site("${chiSiteName}")`);
-    lines.push("");
-    let reservations: string[];
-    if (reserveBy === "name") {
-      reservations = siteNodes.map((n) => `chi.lease.add_node_reservation(reservations, node_name="${n.node_name}")`);
+    const leaseName = multiSite ? `my-reservation-${siteId}` : "my-reservation";
+
+    lines.push(`context.use_device_auth()`);
+    lines.push(`context.use_site("${chiSiteName}")`);
+    lines.push(`context.use_project("CHI-XXXXXX")  # replace with your Chameleon project name`);
+    lines.push(``);
+
+    const leaseArgs: string[] = [`    "${leaseName}",`];
+    if (hasWindow) {
+      leaseArgs.push(`    start_date=${fmtPyDate(window!.start)},`);
+      leaseArgs.push(`    end_date=${fmtPyDate(window!.end)},`);
+    } else {
+      leaseArgs.push(`    duration=${pyTimedelta(durationHours)},`);
+    }
+    lines.push(`my_lease = lease.Lease(`, ...leaseArgs, `)`);
+
+    if (siteFlavors.length > 0 && siteNodes.length === 0) {
+      for (const f of siteFlavors) {
+        lines.push(`my_lease.add_flavor_reservation(name="${f.flavor.name}", amount=${f.count})`);
+      }
+    } else if (reserveBy === "name") {
+      for (const n of siteNodes) {
+        lines.push(`my_lease.add_node_reservation(amount=1, node_name="${n.node_name}")`);
+      }
     } else {
       const counts = countByNodeType(siteNodes);
-      reservations = Array.from(counts).map(([nodeType, count]) =>
-        count > 1
-          ? `chi.lease.add_node_reservation(reservations, node_type="${nodeType}", count=${count})`
-          : `chi.lease.add_node_reservation(reservations, node_type="${nodeType}")`,
-      );
+      for (const [nodeType, count] of counts) {
+        lines.push(`my_lease.add_node_reservation(amount=${count}, node_type="${nodeType}")`);
+      }
     }
-    lines.push(
-      `reservations = []`,
-      ...reservations,
-      ``,
-      `lease = chi.lease.create_lease(`,
-      `    "my-reservation",`,
-      `    reservations=reservations,`,
-      ...(startArg ? [`    ${startArg}`] : []),
-      `    ${endArg}`,
-      `)`,
-      `print(f"Lease created: {lease['id']}")`,
-      "",
-    );
+
+    lines.push(`my_lease.submit(idempotent=True)`, `print(f"Lease created: {my_lease.id}")`, ``);
   }
   return lines.join("\n");
 }
@@ -185,7 +219,17 @@ function groupBySite(nodes: SearchNodeItem[]): Map<string, SearchNodeItem[]> {
   return map;
 }
 
-export function ReservationSnippets({ nodes, sites, horizonUrl, reservationWindow }: Props) {
+function groupFlavorsBySite(flavors: FlavorLine[]): Map<string, FlavorLine[]> {
+  const map = new Map<string, FlavorLine[]>();
+  for (const f of flavors) {
+    const existing = map.get(f.siteId) ?? [];
+    existing.push(f);
+    map.set(f.siteId, existing);
+  }
+  return map;
+}
+
+export function ReservationSnippets({ nodes, flavors = [], sites, horizonUrl, reservationWindow }: Props) {
   const [mode, setMode] = useState<Mode>("cli");
   const [reserveBy, setReserveBy] = useState<ReserveBy>("type");
   const [durationHours, setDurationHours] = useState(24);
@@ -194,8 +238,16 @@ export function ReservationSnippets({ nodes, sites, horizonUrl, reservationWindo
   const canReserveByName = nodes.length > 0 && nodes.every((n) => !!n.node_name);
   const siteNameMap = sites && new Map(sites.map((s) => [s.uid, s.name]));
 
-  const unavailableNodes = nodes.filter(
-    (n) => n.availability === "reserved" || n.availability === "maintenance",
+  const nodesBySite = useMemo(() => groupBySite(nodes), [nodes]);
+  const flavorsBySite = useMemo(() => groupFlavorsBySite(flavors), [flavors]);
+  const siteIds = useMemo(
+    () => Array.from(new Set([...nodesBySite.keys(), ...flavorsBySite.keys()])),
+    [nodesBySite, flavorsBySite],
+  );
+
+  const unavailableNodes = useMemo(
+    () => nodes.filter((n) => n.availability === "reserved" || n.availability === "maintenance"),
+    [nodes],
   );
 
   const availQueries = useQueries({
@@ -369,15 +421,14 @@ export function ReservationSnippets({ nodes, sites, horizonUrl, reservationWindo
         )}
       </div>
 
-      {(mode === "cli" || mode === "python") && (
+      {mode === "cli" && (
         <div className="text-xs text-grey-dark mb-3 space-y-1">
           <p>
             You must have credentials configured for{" "}
-            {Array.from(groupBySite(nodes).keys())
+            {siteIds
               .map((id) => <strong key={id}>{siteNameMap?.get(id) ?? id}</strong>)
               .reduce<React.ReactNode[]>((acc, el, i) => i === 0 ? [el] : [...acc, ", ", el], [])}
-            {" "}before running this.{" "}
-            We recommend{" "}
+            {" "}before running this. We recommend{" "}
             <a
               href="https://chameleoncloud.readthedocs.io/en/latest/technical/cli/ccauth.html"
               target="_blank"
@@ -386,8 +437,40 @@ export function ReservationSnippets({ nodes, sites, horizonUrl, reservationWindo
             >
               ccauth
             </a>
-            {" "}to set up and manage your credentials.
+            {" "}to set up and manage your credentials. After setup, set{" "}
+            <code className="bg-grey-lighter px-1 rounded">OS_CLOUD</code>
+            {" "}to the cloud name from your clouds.yaml before running this.
           </p>
+          {siteIds.length > 1 && (
+            <p>
+              Each site block requires its own{" "}
+              <code className="bg-grey-lighter px-1 rounded">OS_CLOUD</code>
+              {" "}set to the matching cloud name from your clouds.yaml.
+            </p>
+          )}
+        </div>
+      )}
+      {mode === "python" && (
+        <div className="text-xs text-grey-dark mb-3 space-y-1">
+          <p>
+            The snippet uses{" "}
+            <a
+              href="https://python-chi.readthedocs.io"
+              target="_blank"
+              rel="noopener noreferrer"
+              className="text-link hover:text-link-hover underline"
+            >
+              python-chi
+            </a>
+            {" "}and manages authentication independently of your shell environment.
+            When you run it, you'll be prompted to visit a URL to authenticate via your browser.
+            Replace <code className="bg-grey-lighter px-1 rounded">CHI-XXXXXX</code> with your Chameleon project name before running.
+          </p>
+          {siteIds.length > 1 && (
+            <p>
+              Each site block will prompt for a separate authentication — run them one at a time.
+            </p>
+          )}
         </div>
       )}
 
@@ -412,72 +495,101 @@ export function ReservationSnippets({ nodes, sites, horizonUrl, reservationWindo
         </div>
       )}
 
-      {mode === "cli" && <CodeBlock code={cliSnippet(nodes, snippetWindow, reserveBy, durationHours)} />}
-      {mode === "python" && <CodeBlock code={pythonSnippet(nodes, snippetWindow, siteNameMap, reserveBy, durationHours)} />}
+      {mode === "cli" && <CodeBlock code={cliSnippet(nodesBySite, flavorsBySite, snippetWindow, reserveBy, durationHours)} />}
+      {mode === "python" && <CodeBlock code={pythonSnippet(nodesBySite, flavorsBySite, snippetWindow, siteNameMap, reserveBy, durationHours)} />}
       {mode === "horizon" && (
         <div className="space-y-2">
-          {Array.from(groupBySite(nodes)).map(([siteId, siteNodes]) => (
-            <div key={siteId} className="rounded border border-grey-light p-3">
-              <p className="text-sm font-medium text-grey-dark mb-1">
-                {siteNodes[0].site_id.toUpperCase()} — {siteNodes.length} node
-                {siteNodes.length !== 1 ? "s" : ""}
-              </p>
-              <p className="text-xs text-grey mb-1">
-                Types: {Array.from(new Set(siteNodes.map((n) => n.node_type))).join(", ")}
-              </p>
-              {snippetWindow && (
-                <p className="text-xs text-brand-info mb-2">
-                  {fmtCliDate(snippetWindow.start)} → {fmtCliDate(snippetWindow.end)}
+          {siteIds.map((siteId) => {
+            const siteNodes = nodesBySite.get(siteId) ?? [];
+            const siteFlavors = flavorsBySite.get(siteId) ?? [];
+            const flavorUnitCount = siteFlavors.reduce((n, f) => n + f.count, 0);
+            return (
+              <div key={siteId} className="rounded border border-grey-light p-3">
+                <p className="text-sm font-medium text-grey-dark mb-1">
+                  {siteId.toUpperCase()}
+                  {siteNodes.length > 0 && ` — ${siteNodes.length} node${siteNodes.length !== 1 ? "s" : ""}`}
+                  {siteFlavors.length > 0 && ` — ${flavorUnitCount} VM instance${flavorUnitCount !== 1 ? "s" : ""}`}
                 </p>
-              )}
-              {horizonUrl ? (
-                <>
-                  {(() => {
-                    const nodeTypes = [...new Set(siteNodes.map((n) => n.node_type))];
-                    const allSameType = nodeTypes.length === 1;
-                    const singleNodeWithName = siteNodes.length === 1 && !!siteNodes[0].node_name;
+                {siteNodes.length > 0 && (
+                  <p className="text-xs text-grey mb-1">
+                    Types: {Array.from(new Set(siteNodes.map((n) => n.node_type))).join(", ")}
+                  </p>
+                )}
+                {siteFlavors.length > 0 && (
+                  <p className="text-xs text-grey mb-1">
+                    Flavors: {siteFlavors.map((f) => `${f.flavor.name} × ${f.count}`).join(", ")}
+                  </p>
+                )}
+                {snippetWindow && (
+                  <p className="text-xs text-brand-info mb-2">
+                    {fmtCliDate(snippetWindow.start)} → {fmtCliDate(snippetWindow.end)}
+                  </p>
+                )}
+                {horizonUrl ? (
+                  <div className="space-y-2">
+                    {siteNodes.length > 0 &&
+                      (() => {
+                        const nodeTypes = [...new Set(siteNodes.map((n) => n.node_type))];
+                        const allSameType = nodeTypes.length === 1;
+                        const singleNodeWithName = siteNodes.length === 1 && !!siteNodes[0].node_name;
 
-                    let param = "";
-                    let hint = "";
-                    if (reserveBy === "name" && singleNodeWithName) {
-                      param = `?node_name=${siteNodes[0].node_name}`;
-                      hint = "Node name is pre-filled. You will need to set dates and any other options manually.";
-                    } else if (reserveBy === "name") {
-                      hint = "No resource properties will be pre-filled — Horizon only supports pre-filling a single node name. You will need to set all options manually.";
-                    } else if (allSameType) {
-                      param = `?node_type=${nodeTypes[0]}`;
-                      hint = "Node type is pre-filled. You will need to set dates and any other options manually.";
-                    } else {
-                      hint = "No resource properties will be pre-filled — nodes span multiple types. You will need to set all options manually.";
-                    }
+                        let param = "";
+                        let hint = "";
+                        if (reserveBy === "name" && singleNodeWithName) {
+                          param = `?node_name=${siteNodes[0].node_name}`;
+                          hint = "Node name is pre-filled. You will need to set dates and any other options manually.";
+                        } else if (reserveBy === "name") {
+                          hint = "No resource properties will be pre-filled — Horizon only supports pre-filling a single node name. You will need to set all options manually.";
+                        } else if (allSameType) {
+                          param = `?node_type=${nodeTypes[0]}`;
+                          hint = "Node type is pre-filled. You will need to set dates and any other options manually.";
+                        } else {
+                          hint = "No resource properties will be pre-filled — nodes span multiple types. You will need to set all options manually.";
+                        }
 
-                    return (
-                      <>
+                        return (
+                          <div>
+                            <a
+                              href={`${horizonUrl}/project/leases/create${param}`}
+                              target="_blank"
+                              rel="noopener noreferrer"
+                              className="inline-flex items-center gap-1 text-sm text-link hover:text-link-hover font-medium"
+                            >
+                              Reserve nodes in Horizon ↗
+                            </a>
+                            <p className="text-xs text-grey-med mt-2">{hint}</p>
+                          </div>
+                        );
+                      })()}
+                    {siteFlavors.length > 0 && (
+                      <div>
                         <a
-                          href={`${horizonUrl}/project/leases/create${param}`}
+                          href={`${horizonUrl}/project/leases/create`}
                           target="_blank"
                           rel="noopener noreferrer"
                           className="inline-flex items-center gap-1 text-sm text-link hover:text-link-hover font-medium"
                         >
-                          Reserve in Horizon ↗
+                          Reserve VM flavor in Horizon ↗
                         </a>
-                        <p className="text-xs text-grey-med mt-2">{hint}</p>
-                      </>
-                    );
-                  })()}
-                </>
-              ) : (
-                <span className="text-xs text-grey-med">Horizon URL not available for this site</span>
-              )}
-            </div>
-          ))}
+                        <p className="text-xs text-grey-med mt-2">
+                          Choose &quot;Instance Reservation&quot; and select {siteFlavors.map((f) => f.flavor.name).join(", ")} — flavor and dates aren&apos;t pre-filled yet, set them manually.
+                        </p>
+                      </div>
+                    )}
+                  </div>
+                ) : (
+                  <span className="text-xs text-grey-med">Horizon URL not available for this site</span>
+                )}
+              </div>
+            );
+          })}
         </div>
       )}
     </div>
   );
 }
 
-function SpecRow({ label, value }: { label: string; value: React.ReactNode }) {
+export function SpecRow({ label, value }: { label: string; value: React.ReactNode }) {
   return (
     <>
       <dt className="text-grey">{label}</dt>
@@ -502,19 +614,12 @@ function ExpandableSection({ title, children }: { title: string; children: React
   );
 }
 
-function formatBytes(bytes?: number): string {
-  if (!bytes) return "—";
-  if (bytes >= 1024 ** 3) return `${(bytes / 1024 ** 3).toFixed(1)} GB`;
-  if (bytes >= 1024 ** 2) return `${(bytes / 1024 ** 2).toFixed(0)} MB`;
-  if (bytes >= 1024) return `${(bytes / 1024).toFixed(0)} KB`;
-  return `${bytes} B`;
-}
 
 function formatRate(bps?: number): string {
-  if (!bps) return "—";
-  if (bps >= 1e12) return `${bps / 1e12} Tbps`;
-  if (bps >= 1e9) return `${bps / 1e9} Gbps`;
-  if (bps >= 1e6) return `${bps / 1e6} Mbps`;
+  if (bps == null) return "—";
+  if (bps >= 1e12) return `${(bps / 1e12).toFixed(2)} Tbps`;
+  if (bps >= 1e9) return `${(bps / 1e9).toFixed(2)} Gbps`;
+  if (bps >= 1e6) return `${(bps / 1e6).toFixed(0)} Mbps`;
   return `${bps} bps`;
 }
 
@@ -527,6 +632,7 @@ export function NodeSpecSummary({ node }: { node: SearchNodeItem }) {
     <dl className="grid grid-cols-2 gap-x-4 gap-y-1 text-sm">
       <SpecRow label="Node type" value={<span className="font-medium">{node.node_type}</span>} />
       {node.node_name && <SpecRow label="Node name" value={node.node_name} />}
+      <SpecRow label="UUID" value={<span className="font-mono text-xs break-all">{node.uid}</span>} />
       <SpecRow label="Site" value={node.site_id} />
       {cpu?.other_description
         ? <SpecRow label="CPU" value={cpu.other_description} />

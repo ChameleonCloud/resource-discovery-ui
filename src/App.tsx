@@ -1,12 +1,12 @@
-import { useState } from "react";
+import { useState, useMemo } from "react";
 import { Routes, Route, useLocation } from "react-router-dom";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import type { SearchNodeItem } from "./api/types";
+import type { SearchNodeItem, VmFlavor } from "./api/types";
 import { Layout } from "./components/Layout";
 import { SearchBar } from "./components/SearchBar";
 import { DiscoveryPage } from "./pages/DiscoveryPage";
 import { CartPage } from "./pages/CartPage";
-import { useCart } from "./hooks/useCart";
+import { useCart, cartItemCount } from "./hooks/useCart";
 
 const queryClient = new QueryClient({
   defaultOptions: {
@@ -21,12 +21,19 @@ function AppInner() {
   const { cart, dispatch } = useCart();
   const [query, setQuery] = useState("");
   const [resetKey, setResetKey] = useState(0);
+  const [searchEnterSignal, setSearchEnterSignal] = useState(0);
   const [filtersSummary, setFiltersSummary] = useState("");
   const location = useLocation();
 
   function handleCartChange(node: SearchNodeItem, add: boolean) {
-    dispatch(add ? { type: "add", node } : { type: "remove", uid: node.uid });
+    dispatch(add ? { type: "addNode", node } : { type: "removeNode", uid: node.uid });
   }
+
+  function handleFlavorCountChange(flavor: VmFlavor, siteId: string, count: number) {
+    dispatch({ type: "setFlavorCount", siteId, flavor, count });
+  }
+
+  const cartCount = useMemo(() => cartItemCount(cart), [cart]);
 
   function handleReset() {
     setQuery("");
@@ -37,8 +44,8 @@ function AppInner() {
 
   return (
     <Layout
-      cartCount={cart.length}
-      center={isDiscovery ? <SearchBar value={query} onChange={setQuery} /> : undefined}
+      cartCount={cartCount}
+      center={isDiscovery ? <SearchBar value={query} onChange={setQuery} onEnter={() => setSearchEnterSignal((s) => s + 1)} /> : undefined}
       onLogoClick={handleReset}
       feedbackFiltersSummary={isDiscovery ? filtersSummary : undefined}
     >
@@ -51,7 +58,9 @@ function AppInner() {
               cart={cart}
               query={query}
               onQueryChange={setQuery}
+              searchEnterSignal={searchEnterSignal}
               onCartChange={handleCartChange}
+              onFlavorCountChange={handleFlavorCountChange}
               onClearCart={() => dispatch({ type: "clear" })}
               onFiltersSummaryChange={setFiltersSummary}
             />
@@ -62,7 +71,8 @@ function AppInner() {
           element={
             <CartPage
               cart={cart}
-              onRemove={(uid) => dispatch({ type: "remove", uid })}
+              onRemoveNode={(uid) => dispatch({ type: "removeNode", uid })}
+              onFlavorCountChange={(siteId, flavor, count) => dispatch({ type: "setFlavorCount", siteId, flavor, count })}
               onClear={() => dispatch({ type: "clear" })}
             />
           }
