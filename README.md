@@ -51,7 +51,7 @@ All variables are baked in at build time via Vite.
 |---|---|---|
 | `VITE_API_BASE_URL` | `/api` | Backend API base URL. In dev, set to the backend host. In prod, nginx proxies `/api/` to the backend. |
 | `VITE_CORE_SITE_IDS` | `uc,tacc,ncar` | Comma-separated site IDs treated as "core" Chameleon sites. |
-| `VITE_FEATURE_KVM` | `false` | Enable KVM/VM support. Set to `true` only when the backend VM API is available. |
+| `VITE_FEATURE_KVM` | `true` | Enable KVM/VM support. Set to `false` to disable. |
 
 ## Docker
 
