@@ -1,5 +1,6 @@
 import type {
   FeedbackPayload,
+  FlavorAvailabilityResponse,
   FlavorCollection,
   NodeAvailabilityResponse,
   NodeSearchParams,
@@ -60,6 +61,20 @@ export function fetchNodeAvailability(
 ): Promise<NodeAvailabilityResponse> {
   return apiFetch<NodeAvailabilityResponse>(
     `/sites/${siteId}/clusters/${clusterId}/nodes/${nodeId}/availability`,
+  );
+}
+
+export function fetchFlavorAvailability(
+  siteId: string,
+  flavorId: string,
+  startDate: Date,
+  endDate: Date,
+): Promise<FlavorAvailabilityResponse> {
+  const q = new URLSearchParams();
+  q.set("start_date", startDate.toISOString());
+  q.set("end_date", endDate.toISOString());
+  return apiFetch<FlavorAvailabilityResponse>(
+    `/sites/${siteId}/flavors/${flavorId}/availability?${q}`,
   );
 }
 
