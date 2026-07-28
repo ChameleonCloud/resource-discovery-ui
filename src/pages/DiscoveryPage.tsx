@@ -1,6 +1,6 @@
 import { useState, useRef, useMemo, useCallback, useEffect } from "react";
 import { Link } from "react-router-dom";
-import { useQueries } from "@tanstack/react-query";
+import { useQueries, useQueryClient } from "@tanstack/react-query";
 import type { SearchNodeItem, VmFlavor } from "../api/types";
 import type { CartItem } from "../hooks/useCart";
 import { cartItemCount } from "../hooks/useCart";
@@ -11,13 +11,15 @@ import { DEFAULT_FLAVOR_FILTERS, applyFlavorFilters } from "../lib/flavorFilters
 import { useNodeSearch } from "../hooks/useNodeSearch";
 import { useFlavors } from "../hooks/useFlavors";
 import { useSites, useSiteMap } from "../hooks/useSites";
+import { FLAVOR_AVAILABILITY_STALE_MS, flavorAvailabilityKey } from "../hooks/useFlavorAvailability";
 import { isCoreSite, KVM_ENABLED, KVM_SITE_ID } from "../lib/sites";
-import { fetchSiteAvailabilityStatus, fetchNodeAvailability } from "../api/client";
+import { fetchSiteAvailabilityStatus, fetchNodeAvailability, fetchFlavorAvailability } from "../api/client";
 import { findNextAvailableWindow } from "../lib/availability";
 import { FilterSidebar } from "../components/FilterSidebar";
 import { NodeCard } from "../components/NodeCard";
 import { NodeTypeCard } from "../components/NodeTypeCard";
 import { NodeDetail } from "../components/NodeDetail";
+import { FlavorCalendar } from "../components/FlavorCalendar";
 import { FlavorCard } from "../components/FlavorCard";
 import { FlavorDetail } from "../components/FlavorDetail";
 import { SiteAvailabilityBars } from "../components/SiteAvailabilityBars";
@@ -118,6 +120,20 @@ export function DiscoveryPage({ cart, query, onQueryChange, onCartChange, onFlav
       : [...filteredFlavors].sort((a, b) => a.vcpus - b.vcpus || a.name.localeCompare(b.name)),
     [filteredFlavors, sortKey],
   );
+  const queryClient = useQueryClient();
+  useEffect(() => {
+    if (!KVM_ENABLED || sortedFlavors.length === 0) return;
+    const defaultId = sortedFlavors[0].uid;
+    const now = new Date();
+    now.setMinutes(0, 0, 0);
+    const end = new Date(now.getTime() + 7 * 24 * 3600 * 1000);
+    void queryClient.prefetchQuery({
+      queryKey: flavorAvailabilityKey(KVM_SITE_ID, defaultId, now, end),
+      queryFn: () => fetchFlavorAvailability(KVM_SITE_ID, defaultId, now, end),
+      staleTime: FLAVOR_AVAILABILITY_STALE_MS,
+    });
+  }, [sortedFlavors, queryClient]);
+
   const flavorCounts = useMemo(() => {
     const m = new Map<string, number>();
     for (const item of cart) {
@@ -766,18 +782,23 @@ export function DiscoveryPage({ cart, query, onQueryChange, onCartChange, onFlav
                   <p className="text-xs">Try adjusting your search query or filters.</p>
                 </div>
               ) : (
-                <div className="grid gap-3 grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">
-                  {sortedFlavors.map((flavor) => (
-                    <FlavorCard
-                      key={flavor.uid}
-                      flavor={flavor}
-                      siteName={siteMap.get(KVM_SITE_ID)?.name ?? KVM_SITE_ID}
-                      count={flavorCounts.get(flavor.uid) ?? 0}
-                      onCountChange={(count) => onFlavorCountChange(flavor, KVM_SITE_ID, count)}
-                      onClick={() => setSelectedFlavor(flavor)}
-                    />
-                  ))}
-                </div>
+                <>
+                  <div className="bg-white border border-grey-light rounded-md p-6">
+                    <FlavorCalendar siteId={KVM_SITE_ID} flavors={sortedFlavors} />
+                  </div>
+                  <div className="grid gap-3 grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">
+                    {sortedFlavors.map((flavor) => (
+                      <FlavorCard
+                        key={flavor.uid}
+                        flavor={flavor}
+                        siteName={siteMap.get(KVM_SITE_ID)?.name ?? KVM_SITE_ID}
+                        count={flavorCounts.get(flavor.uid) ?? 0}
+                        onCountChange={(count) => onFlavorCountChange(flavor, KVM_SITE_ID, count)}
+                        onClick={() => setSelectedFlavor(flavor)}
+                      />
+                    ))}
+                  </div>
+                </>
               )
             )}
 

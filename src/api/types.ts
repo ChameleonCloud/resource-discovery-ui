@@ -196,3 +196,16 @@ export interface NodeSearchParams {
   offset?: number;
   limit?: number;
 }
+
+export interface FlavorAvailabilitySegment {
+  start: string;
+  end: string;
+  available: number;
+  total: number;
+}
+
+export interface FlavorAvailabilityResponse {
+  flavor_id: string;
+  site_id: string;
+  availability: FlavorAvailabilitySegment[];
+}
