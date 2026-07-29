@@ -1,16 +1,17 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useQueries } from "@tanstack/react-query";
 import type { SearchNodeItem, Reservation } from "../api/types";
 import { fetchNodeAvailability } from "../api/client";
+import { toDateInput } from "../lib/dateUtils";
 
 const DAY_MS = 86400000;
+const HOUR_MS = 3600000;
 const LABEL_W = 200;
 
 type ViewMode = "month" | "week" | "day";
 
 interface ViewConfig {
   columns: number;
-  colWidth: number;
   unit: "day" | "hour";
 }
 
@@ -44,36 +45,14 @@ function addMonths(d: Date, n: number): Date {
   return r;
 }
 
-function getRange(viewMode: ViewMode, anchor: Date): { start: Date; end: Date; config: ViewConfig } {
-  if (viewMode === "month") {
-    const start = startOfMonth(anchor);
-    const end = addMonths(start, 1);
-    const columns = Math.round((end.getTime() - start.getTime()) / DAY_MS);
-    return { start, end, config: { columns, colWidth: 28, unit: "day" } };
-  }
-  if (viewMode === "week") {
-    const start = startOfWeek(anchor);
-    const end = addDays(start, 7);
-    return { start, end, config: { columns: 168, colWidth: 14, unit: "hour" } };
-  }
-  const start = startOfDay(anchor);
-  const end = addDays(start, 1);
-  return { start, end, config: { columns: 24, colWidth: 40, unit: "hour" } };
-}
-
-function rangeLabel(viewMode: ViewMode, start: Date, end: Date): string {
-  if (viewMode === "month") return start.toLocaleDateString(undefined, { month: "long", year: "numeric" });
-  if (viewMode === "week") {
-    const endIncl = addDays(end, -1);
-    return `${start.toLocaleDateString(undefined, { month: "short", day: "numeric" })} – ${endIncl.toLocaleDateString(undefined, { month: "short", day: "numeric", year: "numeric" })}`;
-  }
-  return start.toLocaleDateString(undefined, { weekday: "long", month: "long", day: "numeric", year: "numeric" });
-}
-
-function shiftAnchor(viewMode: ViewMode, anchor: Date, dir: 1 | -1): Date {
-  if (viewMode === "month") return addMonths(anchor, dir);
-  if (viewMode === "week") return addDays(anchor, dir * 7);
-  return addDays(anchor, dir);
+function GridLines({ columns, colWidth }: { columns: number; colWidth: number }) {
+  return (
+    <>
+      {Array.from({ length: columns }, (_, i) => (
+        <div key={i} className="absolute top-0 bottom-0 border-l border-white" style={{ left: i * colWidth }} />
+      ))}
+    </>
+  );
 }
 
 interface Bar {
@@ -88,17 +67,114 @@ interface Props {
   siteMap: Map<string, { name: string }>;
   groupBy: "type" | "individual";
   onNodeClick?: (node: SearchNodeItem) => void;
+  staleSiteIds?: Set<string>;
 }
 
-export function ReservationCalendar({ nodes, siteMap, groupBy, onNodeClick }: Props) {
-  const [viewMode, setViewMode] = useState<ViewMode>("month");
-  const [anchor, setAnchor] = useState<Date>(() => new Date());
+export function ReservationCalendar({ nodes, siteMap, groupBy, onNodeClick, staleSiteIds }: Props) {
+  const [viewMode, setViewMode] = useState<ViewMode>("week");
+  const [startDate, setStartDate] = useState<Date>(() => startOfWeek(new Date()));
+  const [endDate, setEndDate] = useState<Date>(() => addDays(startOfWeek(new Date()), 7));
   const [tooltip, setTooltip] = useState<string | null>(null);
   const [tooltipPos, setTooltipPos] = useState({ x: 0, y: 0 });
+  const containerRef = useRef<HTMLDivElement>(null);
+  const [containerWidth, setContainerWidth] = useState(800);
 
-  const { start: rangeStart, end: rangeEnd, config } = useMemo(() => getRange(viewMode, anchor), [viewMode, anchor]);
-  const trackWidth = config.columns * config.colWidth;
-  const rangeMs = rangeEnd.getTime() - rangeStart.getTime();
+  useEffect(() => {
+    const el = containerRef.current;
+    if (!el) return;
+    const obs = new ResizeObserver(([entry]) => setContainerWidth(entry.contentRect.width));
+    obs.observe(el);
+    return () => obs.disconnect();
+  }, []);
+
+  const rangeMs = Math.max(endDate.getTime() - startDate.getTime(), HOUR_MS);
+
+  const config: ViewConfig = useMemo(() => {
+    if (viewMode !== "day") {
+      return { columns: Math.max(1, Math.round(rangeMs / DAY_MS)), unit: "day" };
+    }
+    return { columns: Math.max(1, Math.round(rangeMs / HOUR_MS)), unit: "hour" };
+  }, [viewMode, rangeMs]);
+
+  const trackWidth = Math.max(containerWidth - LABEL_W, config.columns);
+  const colWidth = trackWidth / config.columns;
+
+  function changeViewMode(mode: ViewMode) {
+    setViewMode(mode);
+    const s = startDate;
+    if (mode === "month") {
+      const ms = startOfMonth(s);
+      setStartDate(ms);
+      setEndDate(addMonths(ms, 1));
+    } else if (mode === "week") {
+      const sw = startOfWeek(s);
+      setStartDate(sw);
+      setEndDate(addDays(sw, 7));
+    } else {
+      const sd = startOfDay(s);
+      setStartDate(sd);
+      setEndDate(addDays(sd, 1));
+    }
+  }
+
+  function shiftDates(dir: 1 | -1) {
+    if (viewMode === "month") {
+      setStartDate((d) => addMonths(d, dir));
+      setEndDate((d) => addMonths(d, dir));
+    } else if (viewMode === "week") {
+      setStartDate((d) => addDays(d, dir * 7));
+      setEndDate((d) => addDays(d, dir * 7));
+    } else {
+      setStartDate((d) => addDays(d, dir));
+      setEndDate((d) => addDays(d, dir));
+    }
+  }
+
+  function goToToday() {
+    const now = new Date();
+    if (viewMode === "month") {
+      setStartDate(startOfMonth(now));
+      setEndDate(addMonths(startOfMonth(now), 1));
+    } else if (viewMode === "week") {
+      setStartDate(startOfWeek(now));
+      setEndDate(addDays(startOfWeek(now), 7));
+    } else {
+      setStartDate(startOfDay(now));
+      setEndDate(addDays(startOfDay(now), 1));
+    }
+  }
+
+  function handleStartChange(dateStr: string) {
+    if (!dateStr) return;
+    const [y, mo, d] = dateStr.split("-").map(Number);
+    const next = new Date(startDate);
+    next.setFullYear(y, mo - 1, d);
+    setStartDate(next);
+  }
+
+  function handleEndChange(dateStr: string) {
+    if (!dateStr) return;
+    const [y, mo, d] = dateStr.split("-").map(Number);
+    const next = new Date(endDate);
+    next.setFullYear(y, mo - 1, d);
+    setEndDate(next);
+  }
+
+  function handleStartHourChange(hourStr: string) {
+    const h = parseInt(hourStr, 10);
+    if (isNaN(h)) return;
+    const next = new Date(startDate);
+    next.setHours(Math.min(Math.max(0, h), 23), 0, 0, 0);
+    setStartDate(next);
+  }
+
+  function handleEndHourChange(hourStr: string) {
+    const h = parseInt(hourStr, 10);
+    if (isNaN(h)) return;
+    const next = new Date(endDate);
+    next.setHours(Math.min(Math.max(0, h), 23), 0, 0, 0);
+    setEndDate(next);
+  }
 
   const queries = useQueries({
     queries: nodes.map((n) => ({
@@ -134,7 +210,7 @@ export function ReservationCalendar({ nodes, siteMap, groupBy, onNodeClick }: Pr
   }, [nodes]);
 
   const now = new Date();
-  const nowFrac = now >= rangeStart && now < rangeEnd ? (now.getTime() - rangeStart.getTime()) / rangeMs : null;
+  const nowFrac = now >= startDate && now < endDate ? (now.getTime() - startDate.getTime()) / rangeMs : null;
 
   function computeBars(uid: string): Bar[] {
     const reservations = nodeReservations.get(uid) ?? [];
@@ -142,26 +218,14 @@ export function ReservationCalendar({ nodes, siteMap, groupBy, onNodeClick }: Pr
       .map((r) => {
         const resStart = new Date(r.start).getTime();
         const resEnd = new Date(r.end).getTime();
-        const clampedStart = Math.max(resStart, rangeStart.getTime());
-        const clampedEnd = Math.min(resEnd, rangeEnd.getTime());
+        const clampedStart = Math.max(resStart, startDate.getTime());
+        const clampedEnd = Math.min(resEnd, endDate.getTime());
         if (clampedEnd <= clampedStart) return null;
-        const left = ((clampedStart - rangeStart.getTime()) / rangeMs) * trackWidth;
+        const left = ((clampedStart - startDate.getTime()) / rangeMs) * trackWidth;
         const width = ((clampedEnd - clampedStart) / rangeMs) * trackWidth;
         return { left, width, start: new Date(resStart), end: new Date(resEnd) };
       })
       .filter((b): b is Bar => b !== null);
-  }
-
-  function GridLines() {
-    if (viewMode === "month") return null;
-    const step = viewMode === "week" ? 24 : 1;
-    return (
-      <>
-        {Array.from({ length: config.columns / step }, (_, i) => (
-          <div key={i} className="absolute top-0 bottom-0 border-l border-white" style={{ left: i * config.colWidth * step }} />
-        ))}
-      </>
-    );
   }
 
   if (nodes.length === 0) {
@@ -169,42 +233,80 @@ export function ReservationCalendar({ nodes, siteMap, groupBy, onNodeClick }: Pr
   }
 
   return (
-    <div className="relative">
-      <div className="flex items-center gap-2 mb-2">
+    <div className="relative" ref={containerRef}>
+      <div className="flex flex-wrap items-center gap-2 mb-2">
         <div className="flex rounded border border-grey-light overflow-hidden text-xs flex-shrink-0">
           {(["month", "week", "day"] as const).map((mode) => (
             <button
               key={mode}
-              onClick={() => setViewMode(mode)}
+              onClick={() => changeViewMode(mode)}
               className={`px-3 py-1 capitalize transition-colors ${viewMode === mode ? "bg-brand-info text-white" : "bg-white text-grey hover:bg-grey-lighter"}`}
             >
               {mode}
             </button>
           ))}
         </div>
-        <div className="flex items-center gap-1 ml-2">
+        <div className="flex items-center gap-1">
           <button
-            onClick={() => setAnchor((a) => shiftAnchor(viewMode, a, -1))}
+            onClick={() => shiftDates(-1)}
             className="text-xs px-2 py-1 rounded border border-grey-light text-grey hover:border-brand-info hover:text-brand-info"
             aria-label="Previous"
           >
             ←
           </button>
           <button
-            onClick={() => setAnchor(new Date())}
+            onClick={goToToday}
             className="text-xs px-2 py-1 rounded border border-grey-light text-grey hover:border-brand-info hover:text-brand-info"
           >
             Today
           </button>
           <button
-            onClick={() => setAnchor((a) => shiftAnchor(viewMode, a, 1))}
+            onClick={() => shiftDates(1)}
             className="text-xs px-2 py-1 rounded border border-grey-light text-grey hover:border-brand-info hover:text-brand-info"
             aria-label="Next"
           >
             →
           </button>
         </div>
-        <span className="text-xs font-medium text-grey-dark ml-1">{rangeLabel(viewMode, rangeStart, rangeEnd)}</span>
+
+        <div className="flex items-center gap-1 text-xs text-grey-dark">
+          <span className="font-medium">Start</span>
+          <input
+            type="date"
+            value={toDateInput(startDate)}
+            onChange={(e) => handleStartChange(e.target.value)}
+            className="border border-grey-light rounded px-1 py-0.5 text-xs"
+          />
+          <input
+            type="number"
+            min={0}
+            max={23}
+            value={startDate.getHours()}
+            onChange={(e) => handleStartHourChange(e.target.value)}
+            className="border border-grey-light rounded px-1 py-0.5 text-xs w-12"
+          />
+          <span>:00</span>
+        </div>
+
+        <div className="flex items-center gap-1 text-xs text-grey-dark">
+          <span className="font-medium">End</span>
+          <input
+            type="date"
+            value={toDateInput(endDate)}
+            onChange={(e) => handleEndChange(e.target.value)}
+            className="border border-grey-light rounded px-1 py-0.5 text-xs"
+          />
+          <input
+            type="number"
+            min={0}
+            max={23}
+            value={endDate.getHours()}
+            onChange={(e) => handleEndHourChange(e.target.value)}
+            className="border border-grey-light rounded px-1 py-0.5 text-xs w-12"
+          />
+          <span>:00</span>
+        </div>
+
         {pendingCount > 0 && (
           <span className="text-xs text-grey-med ml-auto">
             Loading {pendingCount} / {nodes.length} nodes…
@@ -212,149 +314,150 @@ export function ReservationCalendar({ nodes, siteMap, groupBy, onNodeClick }: Pr
         )}
       </div>
 
-      <div className="overflow-x-auto">
-        <div style={{ minWidth: LABEL_W + trackWidth }}>
-          {/* Time axis header */}
-          <div className="flex mb-1 sticky top-0 bg-white z-10" style={{ paddingLeft: LABEL_W }}>
-            {viewMode === "month" &&
-              Array.from({ length: config.columns }, (_, i) => {
-                const d = addDays(rangeStart, i);
-                const isToday = startOfDay(now).getTime() === d.getTime();
-                return (
-                  <div
-                    key={i}
-                    style={{ width: config.colWidth, flexShrink: 0 }}
-                    className={`text-[9px] text-center overflow-hidden ${isToday ? "font-bold text-brand-info" : "text-grey-med"}`}
-                  >
-                    {d.getDate()}
-                  </div>
-                );
-              })}
-            {viewMode === "week" &&
-              Array.from({ length: 7 }, (_, i) => {
-                const d = addDays(rangeStart, i);
-                const isToday = startOfDay(now).getTime() === d.getTime();
-                return (
-                  <div
-                    key={i}
-                    style={{ width: config.colWidth * 24, flexShrink: 0 }}
-                    className={`text-[9px] text-center overflow-hidden border-l border-grey-light ${isToday ? "font-bold text-brand-info" : "text-grey-med"}`}
-                  >
-                    {d.toLocaleDateString(undefined, { weekday: "short", month: "short", day: "numeric" })}
-                  </div>
-                );
-              })}
-            {viewMode === "day" &&
-              Array.from({ length: 24 }, (_, i) => (
-                <div
-                  key={i}
-                  style={{ width: config.colWidth, flexShrink: 0 }}
-                  className="text-[9px] text-center text-grey-med overflow-hidden border-l border-grey-light"
-                >
-                  {i}:00
-                </div>
-              ))}
-          </div>
-
-          {groups.map(({ key, groupNodes }) => {
-            const site = siteMap.get(groupNodes[0].site_id);
-            const groupLabel = (
-              <div
-                className="text-xs font-semibold text-grey-dark uppercase tracking-wide bg-grey-lighter px-1 py-0.5 rounded sticky left-0"
-                style={{ width: LABEL_W + trackWidth }}
-              >
-                {groupNodes[0].node_type}
-                <span className="font-normal text-grey-med ml-1">· {site?.name ?? groupNodes[0].site_id}</span>
-                {groupBy === "type" && <span className="font-normal text-grey-med ml-1">({groupNodes.length})</span>}
-              </div>
-            );
-
-            if (groupBy === "type") {
-              const subRowH = 5;
-              const trackHeight = Math.max(groupNodes.length * subRowH, 8);
-              return (
-                <div key={key} className="mb-2">
-                  {groupLabel}
-                  <div className="flex items-center" style={{ height: trackHeight + 4 }}>
-                    <div style={{ width: LABEL_W, flexShrink: 0 }} />
-                    <div className="relative" style={{ width: trackWidth, height: trackHeight, flexShrink: 0 }}>
-                      <div className="absolute inset-0 bg-grey-lighter rounded" />
-                      <GridLines />
-                      {groupNodes.map((node, idx) =>
-                        computeBars(node.uid).map((b, i) => (
-                          <div
-                            key={`${node.uid}-${i}`}
-                            className="absolute bg-brand-danger/80 rounded-sm cursor-default"
-                            style={{ left: b.left, width: Math.max(b.width, 2), top: idx * subRowH, height: subRowH - 1 }}
-                            onMouseEnter={(e) => {
-                              setTooltipPos({ x: e.clientX, y: e.clientY });
-                              const fmt = (d: Date) =>
-                                d.toLocaleString(undefined, { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" });
-                              setTooltip(`${node.node_name || node.node_type}: ${fmt(b.start)} → ${fmt(b.end)}`);
-                            }}
-                            onMouseMove={(e) => setTooltipPos({ x: e.clientX, y: e.clientY })}
-                            onMouseLeave={() => setTooltip(null)}
-                          />
-                        )),
-                      )}
-                      {nowFrac !== null && (
-                        <div className="absolute top-0 bottom-0 w-px bg-brand-info" style={{ left: nowFrac * trackWidth }} />
-                      )}
-                    </div>
-                  </div>
-                </div>
-              );
-            }
-
+      {/* Time axis header */}
+      <div className="flex mb-1 sticky top-0 bg-white z-10" style={{ paddingLeft: LABEL_W }}>
+        {viewMode === "month" &&
+          Array.from({ length: config.columns }, (_, i) => {
+            const d = addDays(startDate, i);
+            const isToday = startOfDay(now).getTime() === startOfDay(d).getTime();
             return (
-              <div key={key} className="mb-2">
-                {groupLabel}
-
-                {groupNodes.map((node) => {
-                  const bars = computeBars(node.uid);
-                  return (
-                    <div key={node.uid} className="flex items-center" style={{ height: 24 }}>
-                      <div
-                        style={{ width: LABEL_W, flexShrink: 0, position: "sticky", left: 0, zIndex: 1 }}
-                        className="text-xs text-grey truncate pr-2 bg-white cursor-pointer hover:text-link"
-                        title={node.node_name || node.uid}
-                        onClick={() => onNodeClick?.(node)}
-                      >
-                        {node.node_name || node.uid}
-                        {node.availability === "maintenance" && (
-                          <span className="ml-1 text-[9px] px-1 rounded bg-yellow-500 text-white">Maint.</span>
-                        )}
-                      </div>
-                      <div className="relative" style={{ width: trackWidth, height: 18, flexShrink: 0 }}>
-                        <div className="absolute inset-0 bg-grey-lighter rounded" />
-                        <GridLines />
-                        {bars.map((b, i) => (
-                          <div
-                            key={i}
-                            className="absolute top-0 bottom-0 bg-brand-danger/80 rounded cursor-default"
-                            style={{ left: b.left, width: Math.max(b.width, 2) }}
-                            onMouseEnter={(e) => {
-                              setTooltipPos({ x: e.clientX, y: e.clientY });
-                              const fmt = (d: Date) =>
-                                d.toLocaleString(undefined, { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" });
-                              setTooltip(`${node.node_name || node.node_type}: ${fmt(b.start)} → ${fmt(b.end)}`);
-                            }}
-                            onMouseMove={(e) => setTooltipPos({ x: e.clientX, y: e.clientY })}
-                            onMouseLeave={() => setTooltip(null)}
-                          />
-                        ))}
-                        {nowFrac !== null && (
-                          <div className="absolute top-0 bottom-0 w-px bg-brand-info" style={{ left: nowFrac * trackWidth }} />
-                        )}
-                      </div>
-                    </div>
-                  );
-                })}
+              <div
+                key={i}
+                style={{ width: colWidth, flexShrink: 0 }}
+                className={`text-[9px] text-center overflow-hidden ${isToday ? "font-bold text-brand-info" : "text-grey-med"}`}
+              >
+                {d.getDate()}
               </div>
             );
           })}
-        </div>
+        {viewMode === "week" &&
+          Array.from({ length: config.columns }, (_, i) => {
+            const d = addDays(startDate, i);
+            const isToday = startOfDay(now).getTime() === startOfDay(d).getTime();
+            return (
+              <div
+                key={i}
+                style={{ width: colWidth, flexShrink: 0 }}
+                className={`text-[9px] text-center overflow-hidden border-l border-grey-light ${isToday ? "font-bold text-brand-info" : "text-grey-med"}`}
+              >
+                {d.toLocaleDateString(undefined, { weekday: "short", month: "short", day: "numeric" })}
+              </div>
+            );
+          })}
+        {viewMode === "day" &&
+          Array.from({ length: config.columns }, (_, i) => {
+            const d = new Date(startDate.getTime() + i * HOUR_MS);
+            return (
+              <div
+                key={i}
+                style={{ width: colWidth, flexShrink: 0 }}
+                className="text-[9px] text-center text-grey-med overflow-hidden border-l border-grey-light"
+              >
+                {d.getHours()}:00
+              </div>
+            );
+          })}
       </div>
+
+      {groups.map(({ key, groupNodes }) => {
+        const site = siteMap.get(groupNodes[0].site_id);
+        const isStale = staleSiteIds?.has(groupNodes[0].site_id) ?? false;
+        const groupLabel = (
+          <div
+            className="text-xs font-semibold text-grey uppercase tracking-wide bg-white border-t border-b border-grey-light px-1 py-1"
+            style={{ width: LABEL_W + trackWidth }}
+          >
+            {groupNodes[0].node_type}
+            <span className="font-normal text-grey-med ml-1">· {site?.name ?? groupNodes[0].site_id}</span>
+            {groupBy === "type" && <span className="font-normal text-grey-med ml-1">({groupNodes.length})</span>}
+            {isStale && <span className="font-normal text-grey-med ml-1 normal-case tracking-normal">· sync unknown</span>}
+          </div>
+        );
+
+        if (groupBy === "type") {
+          const subRowH = 5;
+          const trackHeight = Math.max(groupNodes.length * subRowH, 8);
+          return (
+            <div key={key} className={`mb-2 ${isStale ? "opacity-40" : ""}`}>
+              {groupLabel}
+              <div className="flex items-center" style={{ height: trackHeight + 4 }}>
+                <div style={{ width: LABEL_W, flexShrink: 0 }} />
+                <div className="relative" style={{ width: trackWidth, height: trackHeight, flexShrink: 0 }}>
+                  <div className="absolute inset-0 bg-grey-lighter rounded" />
+                  {viewMode === "day" && <GridLines columns={config.columns} colWidth={colWidth} />}
+                  {groupNodes.map((node, idx) =>
+                    computeBars(node.uid).map((b, i) => (
+                      <div
+                        key={`${node.uid}-${i}`}
+                        className="absolute bg-brand-danger/80 rounded-sm cursor-default"
+                        style={{ left: b.left, width: Math.max(b.width, 2), top: idx * subRowH, height: subRowH - 1 }}
+                        onMouseEnter={(e) => {
+                          setTooltipPos({ x: e.clientX, y: e.clientY });
+                          const fmt = (d: Date) =>
+                            d.toLocaleString(undefined, { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" });
+                          setTooltip(`${node.node_name || node.node_type}: ${fmt(b.start)} → ${fmt(b.end)}`);
+                        }}
+                        onMouseMove={(e) => setTooltipPos({ x: e.clientX, y: e.clientY })}
+                        onMouseLeave={() => setTooltip(null)}
+                      />
+                    )),
+                  )}
+                  {nowFrac !== null && (
+                    <div className="absolute top-0 bottom-0 w-px bg-brand-info" style={{ left: nowFrac * trackWidth }} />
+                  )}
+                </div>
+              </div>
+            </div>
+          );
+        }
+
+        return (
+          <div key={key} className={`mb-2 ${isStale ? "opacity-40" : ""}`}>
+            {groupLabel}
+
+            {groupNodes.map((node) => {
+              const bars = computeBars(node.uid);
+              return (
+                <div key={node.uid} className="flex items-center" style={{ height: 24 }}>
+                  <div
+                    style={{ width: LABEL_W, flexShrink: 0 }}
+                    className="text-xs text-grey truncate pr-2 bg-white cursor-pointer hover:text-link"
+                    title={node.node_name || node.uid}
+                    onClick={() => onNodeClick?.(node)}
+                  >
+                    {node.node_name || node.uid}
+                    {node.availability === "maintenance" && (
+                      <span className="ml-1 text-[9px] px-1 rounded bg-yellow-500 text-white">Maint.</span>
+                    )}
+                  </div>
+                  <div className="relative" style={{ width: trackWidth, height: 18, flexShrink: 0 }}>
+                    <div className="absolute inset-0 bg-grey-lighter rounded" />
+                    {viewMode === "day" && <GridLines columns={config.columns} colWidth={colWidth} />}
+                    {bars.map((b, i) => (
+                      <div
+                        key={i}
+                        className="absolute top-0 bottom-0 bg-brand-danger/80 rounded cursor-default"
+                        style={{ left: b.left, width: Math.max(b.width, 2) }}
+                        onMouseEnter={(e) => {
+                          setTooltipPos({ x: e.clientX, y: e.clientY });
+                          const fmt = (d: Date) =>
+                            d.toLocaleString(undefined, { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" });
+                          setTooltip(`${node.node_name || node.node_type}: ${fmt(b.start)} → ${fmt(b.end)}`);
+                        }}
+                        onMouseMove={(e) => setTooltipPos({ x: e.clientX, y: e.clientY })}
+                        onMouseLeave={() => setTooltip(null)}
+                      />
+                    ))}
+                    {nowFrac !== null && (
+                      <div className="absolute top-0 bottom-0 w-px bg-brand-info" style={{ left: nowFrac * trackWidth }} />
+                    )}
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        );
+      })}
 
       {tooltip && (
         <div

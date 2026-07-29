@@ -3,7 +3,7 @@ export interface Site {
   name: string;
   description: string;
   location: string;
-  site_class: string;
+  site_class: "baremetal" | "vm" | string;
   web: string;
   latitude: number;
   longitude: number;

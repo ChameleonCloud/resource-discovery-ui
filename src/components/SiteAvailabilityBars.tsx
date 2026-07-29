@@ -1,4 +1,3 @@
-import { useState } from "react";
 import type { SearchNodeItem, Site } from "../api/types";
 import { isCoreSite } from "../lib/sites";
 
@@ -70,8 +69,6 @@ interface Props {
 }
 
 export function SiteAvailabilityBars({ nodes, siteMap, onFilter, selectedChips, selectedSites, onSiteToggle, siteOrder }: Props) {
-  const [showAssociate, setShowAssociate] = useState(false);
-
   if (nodes.length === 0) return null;
 
   const allSites = buildSiteData(nodes, siteMap);
@@ -208,23 +205,14 @@ export function SiteAvailabilityBars({ nodes, siteMap, onFilter, selectedChips, 
       <div className="space-y-2">
         {coreSites.map((s) => renderBar(s, true))}
 
-        {associateSites.length > 0 && (
-          <>
-            {showAssociate && (
-              <div className="border-t border-grey-light pt-2 mt-1 space-y-2">
-                {associateSites.map((s) => renderBar(s, false))}
-              </div>
-            )}
-            <button
-              onClick={() => setShowAssociate((v) => !v)}
-              className="text-xs text-link hover:text-link-hover ml-28 mt-1 transition-colors"
-            >
-              {showAssociate
-                ? "Hide associate sites"
-                : `Show associate sites (${associateSites.length})`}
-            </button>
-          </>
-        )}
+        {(() => {
+          const visible = associateSites.filter((s) => selectedSites?.has(s.siteId));
+          return visible.length > 0 ? (
+            <div className="border-t border-grey-light pt-2 mt-1 space-y-2">
+              {visible.map((s) => renderBar(s, false))}
+            </div>
+          ) : null;
+        })()}
       </div>
 
       <div className="flex items-center gap-4 mt-2.5 ml-28">

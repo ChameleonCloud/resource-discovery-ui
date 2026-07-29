@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import * as Checkbox from "@radix-ui/react-checkbox";
-import type { SearchNodeItem, VmFlavor } from "../api/types";
+import type { SearchNodeItem, VmFlavor, Site } from "../api/types";
 import type { FilterState } from "../lib/filters";
 import {
   computeFacetCount,
@@ -20,7 +20,7 @@ import {
 import type { FlavorFilterState } from "../lib/flavorFilters";
 import { DEFAULT_FLAVOR_FILTERS, VCPU_TIERS, RAM_FLAVOR_TIERS, DISK_FLAVOR_TIERS, COST_TIERS, applyFlavorFilters } from "../lib/flavorFilters";
 import { RAM_TIERS } from "../lib/availability";
-import { KVM_ENABLED } from "../lib/sites";
+import { KVM_ENABLED, isCoreSite } from "../lib/sites";
 
 interface Props {
   all: SearchNodeItem[];
@@ -29,6 +29,16 @@ interface Props {
   flavors: VmFlavor[];
   flavorFilters: FlavorFilterState;
   onFlavorFiltersChange: (f: FlavorFilterState) => void;
+  sites: Site[];
+  selectedSites: Set<string>;
+  sitesDifferFromDefault: boolean;
+  chipSelectionsSize: number;
+  onSiteToggle: (siteId: string) => void;
+  onReset: () => void;
+  view: "bare-metal" | "vms";
+  onViewChange: (view: "bare-metal" | "vms") => void;
+  cardView: "individual" | "type";
+  onCardViewChange: (v: "individual" | "type") => void;
 }
 
 function FacetCheckbox({
@@ -146,12 +156,12 @@ function GroupSection({ label, children }: { label: string; children: React.Reac
 
 const MIN_WIDTH = 180;
 const MAX_WIDTH = 800;
-const DEFAULT_WIDTH = 224;
+const DEFAULT_WIDTH = 256;
 const WIDTH_STORAGE_KEY = "filterSidebarWidth";
 
-export function FilterSidebar({ all, filters, onFiltersChange, flavors, flavorFilters, onFlavorFiltersChange }: Props) {
+export function FilterSidebar({ all, filters, onFiltersChange, flavors, flavorFilters, onFlavorFiltersChange, sites, selectedSites, sitesDifferFromDefault, chipSelectionsSize, onSiteToggle, onReset, view, onViewChange, cardView, onCardViewChange }: Props) {
   const [showAdvanced, setShowAdvanced] = useState(false);
-  const [filterTab, setFilterTab] = useState<"bare-metal" | "flavors">("bare-metal");
+  const [showAssociateSites, setShowAssociateSites] = useState(false);
   const [width, setWidth] = useState(() => {
     const stored = Number(localStorage.getItem(WIDTH_STORAGE_KEY));
     return Number.isFinite(stored) && stored >= MIN_WIDTH && stored <= MAX_WIDTH ? stored : DEFAULT_WIDTH;
@@ -193,11 +203,6 @@ export function FilterSidebar({ all, filters, onFiltersChange, flavors, flavorFi
   useEffect(() => {
     localStorage.setItem(WIDTH_STORAGE_KEY, String(width));
   }, [width]);
-
-  useEffect(() => {
-    if (filters.resourceType === "vms") setFilterTab("flavors");
-    else if (filters.resourceType === "bare-metal") setFilterTab("bare-metal");
-  }, [filters.resourceType]);
 
   const {
     gpuModels, archs, cpuModels, cpuVendors, cpuClockSpeeds,
@@ -254,39 +259,21 @@ export function FilterSidebar({ all, filters, onFiltersChange, flavors, flavorFi
     return next;
   }
 
-  const isFiltered =
-    filters.hasGpu !== null ||
-    filters.gpuModels.size > 0 ||
-    filters.arch !== null ||
-    filters.minRam !== null ||
-    filters.infiniband ||
-    filters.resourceType !== DEFAULT_FILTERS.resourceType ||
-    filters.availabilityWindow !== DEFAULT_FILTERS.availabilityWindow ||
-    filters.duration !== DEFAULT_FILTERS.duration ||
-    hasAnyAdvancedFilter(filters) ||
-    flavorFilters.hasGpu ||
-    flavorFilters.minVcpus !== null ||
-    flavorFilters.minRamBytes !== null ||
-    flavorFilters.minDiskBytes !== null ||
-    flavorFilters.maxSuPerHour !== null;
+  const isFiltered = view === "bare-metal"
+    ? (sitesDifferFromDefault || chipSelectionsSize > 0 || filters.hasGpu !== null || filters.gpuModels.size > 0 || filters.arch !== null ||
+       filters.minRam !== null || filters.infiniband ||
+       filters.availabilityWindow !== DEFAULT_FILTERS.availabilityWindow ||
+       filters.duration !== DEFAULT_FILTERS.duration || hasAnyAdvancedFilter(filters))
+    : (flavorFilters.hasGpu || flavorFilters.minVcpus !== null || flavorFilters.minRamBytes !== null ||
+       flavorFilters.minDiskBytes !== null || flavorFilters.maxSuPerHour !== null);
 
-  const anyBmSpecificFilter =
-    filters.hasGpu !== null || filters.gpuModels.size > 0 ||
-    filters.arch !== null || filters.minRam !== null || filters.infiniband ||
-    filters.availabilityWindow !== DEFAULT_FILTERS.availabilityWindow ||
-    filters.duration !== DEFAULT_FILTERS.duration || hasAnyAdvancedFilter(filters);
-
-  const anyVmSpecificFilter =
-    flavorFilters.hasGpu || flavorFilters.minVcpus !== null || flavorFilters.minRamBytes !== null ||
-    flavorFilters.minDiskBytes !== null || flavorFilters.maxSuPerHour !== null;
-
-  const showBmFilters = !KVM_ENABLED || filterTab === "bare-metal";
-  const showVmFilters = KVM_ENABLED && filterTab === "flavors";
+  const showBmFilters = view === "bare-metal";
+  const showVmFilters = KVM_ENABLED && view === "vms";
 
   return (
     <aside
       style={{ width }}
-      className={`relative flex-shrink-0 bg-white border-r border-grey-light sticky top-20 self-start h-[calc(100vh-5rem)] ${isResizing ? "select-none" : ""}`}
+      className={`relative flex-shrink-0 bg-white border-r border-grey-light sticky top-20 self-start h-[calc(100vh-5rem)] flex flex-col ${isResizing ? "select-none" : ""}`}
     >
       <div
         onMouseDown={handleMouseDown}
@@ -294,118 +281,41 @@ export function FilterSidebar({ all, filters, onFiltersChange, flavors, flavorFi
         title="Drag to resize, double-click to reset"
         className={`absolute top-0 right-0 h-full w-1.5 cursor-col-resize hover:bg-brand-info/40 ${isResizing ? "bg-brand-info/40" : ""}`}
       />
-      <div className="p-4 overflow-y-auto h-full">
-      <Section
-        title="Resource Type"
-        action={isFiltered ? (
-          <button
-            onClick={() => {
-              onFiltersChange(DEFAULT_FILTERS);
-              onFlavorFiltersChange(DEFAULT_FLAVOR_FILTERS);
-            }}
-            className="text-xs text-link hover:text-link-hover transition-colors"
-          >
-            Reset all
-          </button>
-        ) : undefined}
-      >
-        {(() => {
-          const idx = filters.resourceType === "bare-metal" ? 0 : filters.resourceType === "vms" ? 2 : 1;
-          const activePct = idx * 0.5;
-          // w-5 = 1.25rem; rail is inset by 0.625rem (half thumb) on each side
-          const thumbLeftStyle = `calc(${activePct * 100}% - ${activePct * 1.25}rem)`;
-          const moveTo = (target: FilterState["resourceType"]) => {
-            if (target === "vms" && !KVM_ENABLED) return;
-            onFiltersChange({ ...filters, resourceType: target });
-          };
-          return (
-            <div className="py-2">
-              <div
-                className="relative h-6 cursor-pointer select-none"
-                onClick={(e) => {
-                  const rect = e.currentTarget.getBoundingClientRect();
-                  const pct = (e.clientX - rect.left) / rect.width;
-                  moveTo(pct < 0.25 ? "bare-metal" : pct < 0.75 ? "all" : "vms");
-                }}
-              >
-                <div className="absolute top-1/2 -translate-y-1/2 inset-x-[0.625rem] h-2.5 bg-grey-light rounded-full" />
-                <div
-                  className={`absolute top-1/2 -translate-y-1/2 w-5 h-5 rounded-full shadow-md border-2 border-white transition-all duration-200 ${idx === 2 ? "bg-purple-600" : "bg-brand-info"}`}
-                  style={{ left: thumbLeftStyle }}
-                />
-              </div>
-              <div className="flex text-xs mt-1">
-                <button
-                  onClick={() => moveTo("bare-metal")}
-                  className={`flex-1 text-left transition-colors ${idx === 0 ? "text-brand-info font-medium" : "text-grey hover:text-grey-dark"}`}
-                >
-                  Bare Metal
-                </button>
-                <button
-                  onClick={() => moveTo("all")}
-                  className={`flex-1 text-center transition-colors ${idx === 1 ? "text-brand-info font-medium" : "text-grey hover:text-grey-dark"}`}
-                >
-                  All
-                </button>
-                <button
-                  onClick={() => moveTo("vms")}
-                  title={!KVM_ENABLED ? "Virtual machines are not available" : undefined}
-                  className={`flex-1 text-right transition-colors ${
-                    !KVM_ENABLED
-                      ? "text-grey-med cursor-not-allowed"
-                      : idx === 2
-                      ? "text-purple-600 font-medium"
-                      : "text-grey hover:text-grey-dark"
-                  }`}
-                >
-                  Virtual Machines
-                </button>
-              </div>
-            </div>
-          );
-        })()}
-      </Section>
-
       {KVM_ENABLED && (
-        <div className="flex border-b border-grey-light mb-4">
+        <div className="flex border-b border-grey-light flex-shrink-0">
           <button
-            onClick={() => filters.resourceType !== "vms" && setFilterTab("bare-metal")}
-            title={filters.resourceType === "vms" ? "Enable bare metal to switch to these filters" : undefined}
-            className={`flex items-center gap-1.5 px-3 py-2 text-xs font-medium border-b-2 -mb-px ${
-              filters.resourceType === "vms"
-                ? "border-transparent text-grey-med cursor-not-allowed"
-                : filterTab === "bare-metal"
-                ? "border-brand-info text-brand-info transition-colors"
-                : "border-transparent text-grey hover:text-grey-dark transition-colors"
+            onClick={() => onViewChange("bare-metal")}
+            className={`flex-1 py-2 text-sm font-medium border-b-2 -mb-px transition-colors ${
+              view === "bare-metal"
+                ? "border-brand-info text-brand-info"
+                : "border-transparent text-grey hover:text-grey-dark"
             }`}
           >
             Bare Metal
-            {filters.resourceType !== "vms" && anyBmSpecificFilter && filterTab !== "bare-metal" && (
-              <span className="w-1.5 h-1.5 rounded-full bg-blue-400 flex-shrink-0" />
-            )}
           </button>
           <button
-            onClick={() => filters.resourceType !== "bare-metal" && setFilterTab("flavors")}
-            title={filters.resourceType === "bare-metal" ? "Enable virtual machines to switch to these filters" : undefined}
-            className={`flex items-center gap-1.5 px-3 py-2 text-xs font-medium border-b-2 -mb-px ${
-              filters.resourceType === "bare-metal"
-                ? "border-transparent text-grey-med cursor-not-allowed"
-                : filterTab === "flavors"
-                ? "border-purple-500 text-purple-600 transition-colors"
-                : "border-transparent text-grey hover:text-grey-dark transition-colors"
+            onClick={() => onViewChange("vms")}
+            className={`flex-1 py-2 text-sm font-medium border-b-2 -mb-px transition-colors ${
+              view === "vms"
+                ? "border-purple-500 text-purple-600"
+                : "border-transparent text-grey hover:text-grey-dark"
             }`}
           >
             Virtual Machines
-            {filters.resourceType !== "bare-metal" && anyVmSpecificFilter && filterTab !== "flavors" && (
-              <span className="w-1.5 h-1.5 rounded-full bg-purple-400 flex-shrink-0" />
-            )}
           </button>
         </div>
       )}
-
+      <div className="p-4 overflow-y-auto flex-1">
       {showBmFilters && (
       <>
-      <Section title="Availability">
+      <Section title="Availability" action={isFiltered ? (
+        <button
+          onClick={onReset}
+          className="text-xs text-link hover:text-link-hover transition-colors"
+        >
+          Reset all
+        </button>
+      ) : undefined}>
         <div className="flex flex-wrap items-center gap-1.5 text-sm text-grey-dark">
           <span>Available</span>
           <select
@@ -501,6 +411,84 @@ export function FilterSidebar({ all, filters, onFiltersChange, flavors, flavorFi
         )}
 
       </Section>
+
+      <Section title="Display as">
+        <label className="flex items-center gap-2 py-0.5 cursor-pointer text-sm text-grey-dark hover:text-link">
+          <input type="radio" name="card-view" value="individual" checked={cardView === "individual"} onChange={() => onCardViewChange("individual")} className="accent-brand-info" />
+          Individual nodes
+        </label>
+        <label className="flex items-center gap-2 py-0.5 cursor-pointer text-sm text-grey-dark hover:text-link">
+          <input type="radio" name="card-view" value="type" checked={cardView === "type"} onChange={() => onCardViewChange("type")} className="accent-brand-info" />
+          By node type
+        </label>
+      </Section>
+
+      {(() => {
+        const visibleSites = sites.filter((s) => s.site_class === "baremetal");
+        if (visibleSites.length === 0) return null;
+        const coreSites = visibleSites.filter((s) => isCoreSite(s.uid));
+        const associateSites = visibleSites.filter((s) => !isCoreSite(s.uid));
+        return (
+          <Section title="Site">
+            {coreSites.map((site) => (
+              <label
+                key={site.uid}
+                htmlFor={`site-${site.uid}`}
+                className="flex items-center gap-2 py-0.5 cursor-pointer text-sm text-grey-dark hover:text-link"
+              >
+                <Checkbox.Root
+                  id={`site-${site.uid}`}
+                  checked={selectedSites.has(site.uid)}
+                  onCheckedChange={() => onSiteToggle(site.uid)}
+                  className="w-4 h-4 rounded border border-grey-med bg-white data-[state=checked]:bg-brand-info data-[state=checked]:border-brand-info flex items-center justify-center flex-shrink-0"
+                >
+                  <Checkbox.Indicator>
+                    <svg viewBox="0 0 10 10" className="w-3 h-3 text-white" fill="none" stroke="currentColor" strokeWidth="2">
+                      <path d="M1.5 5l2.5 2.5 4.5-4.5" />
+                    </svg>
+                  </Checkbox.Indicator>
+                </Checkbox.Root>
+                <span className="truncate font-medium">{site.name}</span>
+              </label>
+            ))}
+            {associateSites.length > 0 && (
+              <>
+                {showAssociateSites && (
+                  <div className="border-t border-grey-light mt-1 pt-1 space-y-0.5">
+                    {associateSites.map((site) => (
+                      <label
+                        key={site.uid}
+                        htmlFor={`site-${site.uid}`}
+                        className="flex items-center gap-2 py-0.5 cursor-pointer text-sm text-grey hover:text-link"
+                      >
+                        <Checkbox.Root
+                          id={`site-${site.uid}`}
+                          checked={selectedSites.has(site.uid)}
+                          onCheckedChange={() => onSiteToggle(site.uid)}
+                          className="w-4 h-4 rounded border border-grey-med bg-white data-[state=checked]:bg-brand-info data-[state=checked]:border-brand-info flex items-center justify-center flex-shrink-0"
+                        >
+                          <Checkbox.Indicator>
+                            <svg viewBox="0 0 10 10" className="w-3 h-3 text-white" fill="none" stroke="currentColor" strokeWidth="2">
+                              <path d="M1.5 5l2.5 2.5 4.5-4.5" />
+                            </svg>
+                          </Checkbox.Indicator>
+                        </Checkbox.Root>
+                        <span className="truncate">{site.name}</span>
+                      </label>
+                    ))}
+                  </div>
+                )}
+                <button
+                  onClick={() => setShowAssociateSites((v) => !v)}
+                  className="text-xs text-link hover:text-link-hover mt-0.5"
+                >
+                  {showAssociateSites ? "Hide associate sites" : `Show associate sites (${associateSites.length})`}
+                </button>
+              </>
+            )}
+          </Section>
+        );
+      })()}
 
       <Section title="GPU">
         <FacetCheckbox
@@ -1006,11 +994,18 @@ export function FilterSidebar({ all, filters, onFiltersChange, flavors, flavorFi
       {showVmFilters && (
       <>
 
-        <Section title="GPU">
+        <Section title="GPU" action={isFiltered ? (
+          <button
+            onClick={() => onFlavorFiltersChange(DEFAULT_FLAVOR_FILTERS)}
+            className="text-xs text-link hover:text-link-hover transition-colors"
+          >
+            Reset all
+          </button>
+        ) : undefined}>
           <FacetCheckbox
             id="flavor-gpu"
             label="Has GPU"
-            count={applyFlavorFilters(flavors, { ...flavorFilters, hasGpu: false }).filter((f) => f.gpu?.gpu ?? false).length}
+            count={applyFlavorFilters(flavors, { ...flavorFilters, hasGpu: false }).filter((f) => f.gpu.gpu).length}
             checked={flavorFilters.hasGpu}
             onCheckedChange={(v) => onFlavorFiltersChange({ ...flavorFilters, hasGpu: !!v })}
           />
