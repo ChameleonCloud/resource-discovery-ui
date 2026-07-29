@@ -1,4 +1,4 @@
-import { useState, useRef, useMemo, useCallback, useEffect } from "react";
+import { useState, useMemo, useCallback, useEffect, useRef } from "react";
 import { Link } from "react-router-dom";
 import { useQueries, useQueryClient } from "@tanstack/react-query";
 import type { SearchNodeItem, VmFlavor } from "../api/types";
@@ -7,11 +7,12 @@ import { cartItemCount } from "../hooks/useCart";
 import type { FilterState } from "../lib/filters";
 import { DEFAULT_FILTERS, applyFilters, applyTextQuery, getActiveFilterChips } from "../lib/filters";
 import type { FlavorFilterState } from "../lib/flavorFilters";
-import { DEFAULT_FLAVOR_FILTERS, applyFlavorFilters } from "../lib/flavorFilters";
+import { DEFAULT_FLAVOR_FILTERS, applyFlavorFilters, getActiveFlavorFilterChips } from "../lib/flavorFilters";
 import { useNodeSearch } from "../hooks/useNodeSearch";
 import { useFlavors } from "../hooks/useFlavors";
 import { useSites, useSiteMap } from "../hooks/useSites";
 import { FLAVOR_AVAILABILITY_STALE_MS, flavorAvailabilityKey } from "../hooks/useFlavorAvailability";
+import { truncateToHour } from "../lib/dateUtils";
 import { isCoreSite, KVM_ENABLED, KVM_SITE_ID } from "../lib/sites";
 import { fetchSiteAvailabilityStatus, fetchNodeAvailability, fetchFlavorAvailability } from "../api/client";
 import { findNextAvailableWindow } from "../lib/availability";
@@ -25,7 +26,7 @@ import { FlavorDetail } from "../components/FlavorDetail";
 import { SiteAvailabilityBars } from "../components/SiteAvailabilityBars";
 import { ReservationCalendar } from "../components/ReservationCalendar";
 
-type SortKey = "availability" | "alphabetical";
+type SortKey = "default" | "ram-asc" | "ram-desc" | "alphabetical";
 
 const SEVEN_DAYS_MS = 7 * 24 * 3600 * 1000;
 
@@ -65,15 +66,15 @@ export function DiscoveryPage({ cart, query, onQueryChange, onCartChange, onFlav
   const [chipSelections, setChipSelections] = useState<Set<string>>(new Set());
   const [selectedSites, setSelectedSites] = useState<Set<string>>(new Set());
   const [debouncedQuery, setDebouncedQuery] = useState("");
-  const [sortKey, setSortKey] = useState<SortKey>("availability");
+  const [sortKey, setSortKey] = useState<SortKey>("default");
   const [availTab, setAvailTab] = useState<"now" | "timeline">("now");
   const [selectedNode, setSelectedNode] = useState<SearchNodeItem | null>(null);
   const [selectedFlavor, setSelectedFlavor] = useState<VmFlavor | null>(null);
-  const [cardView, setCardView] = useState<"individual" | "type" | "flavors">("individual");
-  const viewSwitchPendingRef = useRef(false);
+  const [activeView, setActiveView] = useState<"bare-metal" | "vms">("bare-metal");
+  const [cardView, setCardView] = useState<"individual" | "type">("individual");
 
-  const showBareMetal = filters.resourceType !== "vms";
-  const showVms = KVM_ENABLED && filters.resourceType !== "bare-metal";
+  const isBmView = activeView === "bare-metal";
+  const isVmView = KVM_ENABLED && activeView === "vms";
 
   // Debounce query from header
   useEffect(() => {
@@ -111,28 +112,33 @@ export function DiscoveryPage({ cart, query, onQueryChange, onCartChange, onFlav
     const q = debouncedQuery.trim().toLowerCase();
     return q ? afterFilters.filter((f) =>
       f.name.toLowerCase().includes(q) ||
-      (q === "gpu" && f.gpu?.gpu)
+      (q === "gpu" && f.gpu.gpu)
     ) : afterFilters;
   }, [flavors, flavorFilters, debouncedQuery]);
-  const sortedFlavors = useMemo(
-    () => sortKey === "alphabetical"
-      ? [...filteredFlavors].sort((a, b) => a.name.localeCompare(b.name))
-      : [...filteredFlavors].sort((a, b) => a.vcpus - b.vcpus || a.name.localeCompare(b.name)),
-    [filteredFlavors, sortKey],
-  );
+  const sortedFlavors = useMemo(() => {
+    const arr = [...filteredFlavors];
+    if (sortKey === "alphabetical") return arr.sort((a, b) => a.name.localeCompare(b.name));
+    if (sortKey === "ram-asc") return arr.sort((a, b) => a.ram_size - b.ram_size || a.name.localeCompare(b.name));
+    if (sortKey === "ram-desc") return arr.sort((a, b) => b.ram_size - a.ram_size || a.name.localeCompare(b.name));
+    return arr.sort((a, b) =>
+      (a.gpu.gpu ? 1 : 0) - (b.gpu.gpu ? 1 : 0) ||
+      a.vcpus - b.vcpus ||
+      a.ram_size - b.ram_size ||
+      a.name.localeCompare(b.name)
+    );
+  }, [filteredFlavors, sortKey]);
   const queryClient = useQueryClient();
   useEffect(() => {
-    if (!KVM_ENABLED || sortedFlavors.length === 0) return;
+    if (!isVmView || sortedFlavors.length === 0) return;
     const defaultId = sortedFlavors[0].uid;
-    const now = new Date();
-    now.setMinutes(0, 0, 0);
+    const now = truncateToHour();
     const end = new Date(now.getTime() + 7 * 24 * 3600 * 1000);
     void queryClient.prefetchQuery({
       queryKey: flavorAvailabilityKey(KVM_SITE_ID, defaultId, now, end),
       queryFn: () => fetchFlavorAvailability(KVM_SITE_ID, defaultId, now, end),
       staleTime: FLAVOR_AVAILABILITY_STALE_MS,
     });
-  }, [sortedFlavors, queryClient]);
+  }, [isVmView, sortedFlavors, queryClient]);
 
   const flavorCounts = useMemo(() => {
     const m = new Map<string, number>();
@@ -143,12 +149,11 @@ export function DiscoveryPage({ cart, query, onQueryChange, onCartChange, onFlav
   }, [cart]);
   const totalSelected = useMemo(() => cartItemCount(cart), [cart]);
 
+  const sitesInitialized = useRef(false);
   useEffect(() => {
-    if (sites.length === 0) return;
-    setSelectedSites((prev) => {
-      if (prev.size > 0) return prev;
-      return new Set(sites.filter((s) => isCoreSite(s.uid)).map((s) => s.uid));
-    });
+    if (sites.length === 0 || sitesInitialized.current) return;
+    sitesInitialized.current = true;
+    setSelectedSites(new Set(sites.filter((s) => isCoreSite(s.uid)).map((s) => s.uid)));
   }, [sites]);
 
   const [siteOrder, setSiteOrder] = useState<string[]>([]);
@@ -173,8 +178,23 @@ export function DiscoveryPage({ cart, query, onQueryChange, onCartChange, onFlav
       .filter((q) => q.data)
       .map((q) => new Date(q.data!.last_synced).getTime());
     if (times.length === 0) return null;
-    return new Date(Math.max(...times));
+    return new Date(Math.min(...times));
   }, [syncQueries]);
+
+  const staleSiteIds = useMemo(() => {
+    const now = Date.now();
+    const stale = new Set<string>();
+    siteIds.forEach((id, i) => {
+      const q = syncQueries[i];
+      if (!q?.data) {
+        stale.add(id);
+      } else {
+        const ageMin = (now - new Date(q.data.last_synced).getTime()) / 60000;
+        if (ageMin > 60) stale.add(id);
+      }
+    });
+    return stale;
+  }, [syncQueries, siteIds]);
 
   const cartIds = useMemo(
     () => new Set(cart.filter((i) => i.kind === "node").map((i) => i.node.uid)),
@@ -229,7 +249,7 @@ export function DiscoveryPage({ cart, query, onQueryChange, onCartChange, onFlav
 
   const sorted = useMemo(() => {
     const arr = [...filtered];
-    if (sortKey === "availability") {
+    if (sortKey === "default") {
       const order: Record<string, number> = { available: 0, unknown: 1, maintenance: 2, reserved: 3 };
       const counts = new Map<string, number>();
       for (const n of arr) counts.set(n.node_type, (counts.get(n.node_type) ?? 0) + 1);
@@ -240,6 +260,18 @@ export function DiscoveryPage({ cart, query, onQueryChange, onCartChange, onFlav
         if (byCount !== 0) return byCount;
         return a.node_type.localeCompare(b.node_type);
       });
+    }
+    if (sortKey === "ram-asc") {
+      return arr.sort((a, b) =>
+        (a.main_memory?.ram_size ?? 0) - (b.main_memory?.ram_size ?? 0) ||
+        (a.node_name || a.node_type).localeCompare(b.node_name || b.node_type)
+      );
+    }
+    if (sortKey === "ram-desc") {
+      return arr.sort((a, b) =>
+        (b.main_memory?.ram_size ?? 0) - (a.main_memory?.ram_size ?? 0) ||
+        (a.node_name || a.node_type).localeCompare(b.node_name || b.node_type)
+      );
     }
     return arr.sort((a, b) =>
       (a.node_name || a.node_type).localeCompare(b.node_name || b.node_type)
@@ -262,6 +294,7 @@ export function DiscoveryPage({ cart, query, onQueryChange, onCartChange, onFlav
   }, [sorted, sortKey]);
 
   const filterChips = useMemo(() => getActiveFilterChips(filters), [filters]);
+  const flavorFilterChips = useMemo(() => getActiveFlavorFilterChips(flavorFilters), [flavorFilters]);
 
   const selectedNodeTypeChips = useMemo(
     () => Array.from(new Set(Array.from(chipSelections).map((k) => k.split(":")[1]))),
@@ -278,11 +311,15 @@ export function DiscoveryPage({ cart, query, onQueryChange, onCartChange, onFlav
     });
   }, []);
 
-  const handleGroupSelect = useCallback((nodes: SearchNodeItem[], add: boolean) => {
-    for (const n of nodes) {
-      const inCart = cartIds.has(n.uid);
-      if (add && !inCart) onCartChange(n, true);
-      if (!add && inCart) onCartChange(n, false);
+  const handleNodeTypeQuantityChange = useCallback((nodes: SearchNodeItem[], count: number) => {
+    const inCart = nodes.filter((n) => cartIds.has(n.uid));
+    const current = inCart.length;
+    if (count > current) {
+      const toAdd = nodes.filter((n) => !cartIds.has(n.uid)).slice(0, count - current);
+      for (const n of toAdd) onCartChange(n, true);
+    } else if (count < current) {
+      const toRemove = inCart.slice(count);
+      for (const n of toRemove) onCartChange(n, false);
     }
   }, [cartIds, onCartChange]);
 
@@ -328,46 +365,23 @@ export function DiscoveryPage({ cart, query, onQueryChange, onCartChange, onFlav
     }
   }, [reservationWindow]);
 
-  // Keep cardView in sync when a resource type is toggled off
-  useEffect(() => {
-    if (!showVms && cardView === "flavors") setCardView("individual");
-  }, [showVms, cardView]);
-  useEffect(() => {
-    if (!showBareMetal && KVM_ENABLED && cardView !== "flavors") setCardView("flavors");
-  }, [showBareMetal, cardView]);
-
   useEffect(() => {
     if (searchEnterSignal === 0) return;
     const q = query.trim();
     if (!q) return;
     setDebouncedQuery(q);
-    viewSwitchPendingRef.current = true;
   }, [searchEnterSignal, query]);
 
-  useEffect(() => {
-    if (!viewSwitchPendingRef.current) return;
-    if (isFetching) return;
-    viewSwitchPendingRef.current = false;
-    if (cardView !== "flavors" && showVms && sortedFlavors.length > 0 && sorted.length === 0) {
-      setCardView("flavors");
-    } else if (cardView === "flavors" && showBareMetal && sorted.length > 0 && sortedFlavors.length === 0) {
-      setCardView("individual");
-    }
-  // viewSwitchPendingRef is intentionally excluded: refs are stable and don't need to be listed
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [isFetching, sorted, sortedFlavors, cardView, showVms, showBareMetal]);
-
-  const handleResetFilters = useCallback(() => {
+  const handleResetBm = useCallback(() => {
     setFilters(DEFAULT_FILTERS);
-    setFlavorFilters(DEFAULT_FLAVOR_FILTERS);
     setChipSelections(new Set());
     setSelectedSites(new Set(sites.filter((s) => isCoreSite(s.uid)).map((s) => s.uid)));
   }, [sites]);
 
-  const handleResetSiteTypeFilters = useCallback(() => {
-    setChipSelections(new Set());
-    setSelectedSites(new Set(sites.filter((s) => isCoreSite(s.uid)).map((s) => s.uid)));
-  }, [sites]);
+  const handleViewChange = useCallback((view: "bare-metal" | "vms") => {
+    setActiveView(view);
+    setSortKey("default");
+  }, []);
 
   const handleSiteToggle = useCallback((siteId: string) => {
     setSelectedSites((prev) => {
@@ -388,25 +402,6 @@ export function DiscoveryPage({ cart, query, onQueryChange, onCartChange, onFlav
     });
   }, []);
 
-  const anyVmSidebarFilter =
-    flavorFilters.hasGpu ||
-    flavorFilters.minVcpus !== null ||
-    flavorFilters.minRamBytes !== null ||
-    flavorFilters.minDiskBytes !== null ||
-    flavorFilters.maxSuPerHour !== null;
-
-  const vmSearchHits = !!debouncedQuery.trim() && sortedFlavors.length > 0;
-
-  const anyVmFilter = anyVmSidebarFilter || vmSearchHits;
-
-  const bmSearchHits = !!debouncedQuery.trim() && sorted.length > 0;
-
-  const anyBmFilter =
-    bmSearchHits ||
-    filterChips.length > 0 ||
-    sitesDifferFromDefault ||
-    chipSelections.size > 0;
-
   return (
     <div className="flex">
       <FilterSidebar
@@ -416,6 +411,16 @@ export function DiscoveryPage({ cart, query, onQueryChange, onCartChange, onFlav
         flavors={flavors}
         flavorFilters={flavorFilters}
         onFlavorFiltersChange={setFlavorFilters}
+        sites={sites}
+        selectedSites={selectedSites}
+        sitesDifferFromDefault={sitesDifferFromDefault}
+        chipSelectionsSize={chipSelections.size}
+        onSiteToggle={handleSiteToggle}
+        onReset={handleResetBm}
+        view={activeView}
+        onViewChange={handleViewChange}
+        cardView={cardView}
+        onCardViewChange={setCardView}
       />
 
       <div className="flex-1 min-w-0 flex flex-col">
@@ -423,84 +428,7 @@ export function DiscoveryPage({ cart, query, onQueryChange, onCartChange, onFlav
 
           <div className="flex flex-col gap-4">
 
-            {/* Primary view tabs + count/sort */}
-            <div className="flex items-center justify-between border-b border-grey-light">
-              <div className="flex text-sm">
-                <button
-                  onClick={() => showBareMetal && setCardView("individual")}
-                  title={!showBareMetal ? "Enable bare metal to use this view" : undefined}
-                  className={`px-4 py-2 flex items-center gap-1.5 border-b-2 -mb-px transition-colors ${
-                    !showBareMetal
-                      ? "border-transparent text-grey-med cursor-not-allowed"
-                      : cardView === "individual"
-                      ? "border-brand-info text-brand-info font-medium"
-                      : "border-transparent text-grey hover:text-grey-dark"
-                  }`}
-                >
-                  Bare Metal — Nodes
-                  {showBareMetal && anyBmFilter && sorted.length > 0 && cardView === "flavors" && (
-                    <span className="w-1.5 h-1.5 rounded-full bg-blue-400 flex-shrink-0" />
-                  )}
-                </button>
-                <button
-                  onClick={() => showBareMetal && setCardView("type")}
-                  title={!showBareMetal ? "Enable bare metal to use this view" : undefined}
-                  className={`px-4 py-2 flex items-center gap-1.5 border-b-2 -mb-px transition-colors ${
-                    !showBareMetal
-                      ? "border-transparent text-grey-med cursor-not-allowed"
-                      : cardView === "type"
-                      ? "border-brand-info text-brand-info font-medium"
-                      : "border-transparent text-grey hover:text-grey-dark"
-                  }`}
-                >
-                  Bare Metal — Node Types
-                </button>
-                {KVM_ENABLED && (
-                  <>
-                    <div className="w-px bg-grey-light self-stretch my-1" />
-                    <button
-                      onClick={() => showVms && setCardView("flavors")}
-                      title={!showVms ? "Enable virtual machines to use this view" : undefined}
-                      className={`px-4 py-2 flex items-center gap-1.5 border-b-2 -mb-px transition-colors ${
-                        !showVms
-                          ? "border-transparent text-grey-med cursor-not-allowed"
-                          : cardView === "flavors"
-                          ? "border-purple-500 text-purple-600 font-medium"
-                          : "border-transparent text-grey hover:text-grey-dark"
-                      }`}
-                    >
-                      Virtual Machines
-                      {showVms && anyVmFilter && sortedFlavors.length > 0 && cardView !== "flavors" && (
-                        <span className="w-1.5 h-1.5 rounded-full bg-purple-400 flex-shrink-0" />
-                      )}
-                    </button>
-                  </>
-                )}
-              </div>
-              <div className="flex items-center gap-3 pb-1">
-                {isFetching && cardView !== "flavors" && (
-                  <span className="text-grey-med text-xs">Refreshing…</span>
-                )}
-                <span className="text-xs text-grey tabular-nums">
-                  {cardView === "flavors"
-                    ? `${sortedFlavors.length} flavor${sortedFlavors.length !== 1 ? "s" : ""}`
-                    : cardView === "type"
-                    ? `${typeGroups.length} node type${typeGroups.length !== 1 ? "s" : ""}`
-                    : `${sorted.length} node${sorted.length !== 1 ? "s" : ""}`}
-                </span>
-                <select
-                  value={sortKey}
-                  onChange={(e) => setSortKey(e.target.value as SortKey)}
-                  className="text-xs border border-grey-light rounded px-2 py-1 text-grey-dark bg-white focus:outline-none focus:ring-1 focus:ring-brand-info"
-                  aria-label="Sort by"
-                >
-                  <option value="availability">{cardView === "flavors" ? "Sort: By vCPUs" : "Sort: Soonest available"}</option>
-                  <option value="alphabetical">Sort: Alphabetical</option>
-                </select>
-              </div>
-            </div>
-
-            {showBareMetal && cardView !== "flavors" && (
+            {isBmView && (
               <div className="bg-white border border-grey-light rounded-md">
                 <div className="flex items-center gap-2 px-6 pt-3 pb-0">
                   {(() => {
@@ -514,7 +442,7 @@ export function DiscoveryPage({ cart, query, onQueryChange, onCartChange, onFlav
                     );
                   })()}
                   <span className="text-xs font-medium text-grey uppercase tracking-wide">
-                    Availability of Filtered Nodes
+                    {cardView === "type" ? "Availability of Filtered Node Types" : "Availability of Filtered Nodes"}
                     {lastSynced && (
                       <span className="normal-case font-normal text-grey-med ml-1">
                         (last sync&apos;d {lastSynced.toLocaleTimeString(undefined, { hour: "numeric", minute: "2-digit" })})
@@ -537,37 +465,6 @@ export function DiscoveryPage({ cart, query, onQueryChange, onCartChange, onFlav
                   </div>
                 </div>
 
-                {(availTab === "now" || chipSelections.size > 0 || sitesDifferFromDefault) && (
-                  <div className="h-7 flex items-center px-6">
-                    {availTab === "now" && (
-                      <span className="text-xs text-grey-med italic">Click site names to include or exclude from results</span>
-                    )}
-                    {(chipSelections.size > 0 || sitesDifferFromDefault) && (
-                      <div className="flex items-center gap-1.5 ml-auto">
-                        <span className="text-xs text-grey-med">Filtered by:</span>
-                        {sitesDifferFromDefault &&
-                          Array.from(selectedSites).map((id) => (
-                            <span key={id} className="text-xs bg-grey-lighter text-grey-dark px-1.5 py-0.5 rounded">
-                              {siteMap.get(id)?.name ?? id}
-                            </span>
-                          ))}
-                        {chipSelections.size > 0 &&
-                          selectedNodeTypeChips.map((nt) => (
-                            <span key={nt} className="text-xs bg-brand-info/10 text-brand-info px-1.5 py-0.5 rounded">
-                              {nt}
-                            </span>
-                          ))}
-                        <button
-                          onClick={handleResetSiteTypeFilters}
-                          className="text-xs text-link hover:text-link-hover transition-colors ml-1"
-                        >
-                          ↺ Reset
-                        </button>
-                      </div>
-                    )}
-                  </div>
-                )}
-
                 {availTab === "now" ? (
                   <SiteAvailabilityBars
                     nodes={slotFiltered}
@@ -575,141 +472,77 @@ export function DiscoveryPage({ cart, query, onQueryChange, onCartChange, onFlav
                     onFilter={handleAvailabilityFilter}
                     selectedChips={chipSelections}
                     selectedSites={selectedSites}
-                    onSiteToggle={handleSiteToggle}
                     siteOrder={siteOrder}
                   />
                 ) : (
                   <div className="px-6 py-3">
-                    <ReservationCalendar nodes={filtered} siteMap={siteMap} groupBy={cardView === "type" ? "type" : "individual"} onNodeClick={setSelectedNode} />
+                    <ReservationCalendar nodes={filtered} siteMap={siteMap} groupBy={cardView === "type" ? "type" : "individual"} onNodeClick={setSelectedNode} staleSiteIds={staleSiteIds} />
                   </div>
                 )}
               </div>
             )}
 
-            {/* Active filter chips — bare metal views */}
-            {showBareMetal && cardView !== "flavors" && (debouncedQuery.trim() || filterChips.length > 0 || sitesDifferFromDefault || chipSelections.size > 0) && (
-              <div className="flex items-center gap-1.5 flex-wrap">
-                {debouncedQuery.trim() && (
-                  <span className="flex items-center gap-1 text-xs bg-brand-info/10 text-brand-info px-2 py-0.5 rounded-full">
-                    Search: &quot;{debouncedQuery.length > 24 ? `${debouncedQuery.slice(0, 24)}…` : debouncedQuery}&quot;
-                    <button
-                      onClick={() => onQueryChange("")}
-                      className="hover:text-brand-danger transition-colors"
-                      aria-label="Clear search"
-                    >
-                      ✕
-                    </button>
-                  </span>
-                )}
-                {filterChips.map((chip) => (
-                  <span
-                    key={chip.id}
-                    className="flex items-center gap-1 text-xs bg-brand-info/10 text-brand-info px-2 py-0.5 rounded-full"
-                  >
-                    {chip.label}
-                    <button
-                      onClick={() => setFilters(chip.clear(filters))}
-                      className="hover:text-brand-danger transition-colors"
-                      aria-label={`Remove filter: ${chip.label}`}
-                    >
-                      ✕
-                    </button>
-                  </span>
-                ))}
-                {sitesDifferFromDefault &&
-                  Array.from(selectedSites).map((id) => (
-                    <span
-                      key={`site-${id}`}
-                      className="flex items-center gap-1 text-xs bg-grey-lighter text-grey-dark px-2 py-0.5 rounded-full"
-                    >
-                      Site: {siteMap.get(id)?.name ?? id}
-                      <button
-                        onClick={() => handleSiteToggle(id)}
-                        className="hover:text-brand-danger transition-colors"
-                        aria-label={`Remove site filter: ${siteMap.get(id)?.name ?? id}`}
-                      >
-                        ✕
-                      </button>
+            {isBmView && (
+              <div className="flex items-center gap-3 border-b border-grey-light py-1">
+                <div className="flex items-center gap-1.5 flex-wrap flex-1">
+                  {debouncedQuery.trim() && (
+                    <span className="flex items-center gap-1 text-xs bg-brand-info/10 text-brand-info px-2 py-0.5 rounded-full">
+                      Search: &quot;{debouncedQuery.length > 24 ? `${debouncedQuery.slice(0, 24)}…` : debouncedQuery}&quot;
+                      <button onClick={() => onQueryChange("")} className="hover:text-brand-danger transition-colors" aria-label="Clear search">✕</button>
+                    </span>
+                  )}
+                  {filterChips.map((chip) => (
+                    <span key={chip.id} className="flex items-center gap-1 text-xs bg-brand-info/10 text-brand-info px-2 py-0.5 rounded-full">
+                      {chip.label}
+                      <button onClick={() => setFilters(chip.clear(filters))} className="hover:text-brand-danger transition-colors" aria-label={`Remove filter: ${chip.label}`}>✕</button>
                     </span>
                   ))}
-                {selectedNodeTypeChips.map((nt) => (
-                  <span
-                    key={`type-${nt}`}
-                    className="flex items-center gap-1 text-xs bg-brand-info/10 text-brand-info px-2 py-0.5 rounded-full"
-                  >
-                    Node type: {nt}
+                  {sitesDifferFromDefault && Array.from(selectedSites).map((id) => (
+                    <span key={`site-${id}`} className="flex items-center gap-1 text-xs bg-grey-lighter text-grey-dark px-2 py-0.5 rounded-full">
+                      Site: {siteMap.get(id)?.name ?? id}
+                      <button onClick={() => handleSiteToggle(id)} className="hover:text-brand-danger transition-colors" aria-label={`Remove site filter: ${siteMap.get(id)?.name ?? id}`}>✕</button>
+                    </span>
+                  ))}
+                  {selectedNodeTypeChips.map((nt) => (
+                    <span key={`type-${nt}`} className="flex items-center gap-1 text-xs bg-brand-info/10 text-brand-info px-2 py-0.5 rounded-full">
+                      Node type: {nt}
+                      <button onClick={() => handleRemoveNodeTypeChip(nt)} className="hover:text-brand-danger transition-colors" aria-label={`Remove node type filter: ${nt}`}>✕</button>
+                    </span>
+                  ))}
+                  {(debouncedQuery.trim() || filterChips.length > 0 || sitesDifferFromDefault || chipSelections.size > 0) && (
                     <button
-                      onClick={() => handleRemoveNodeTypeChip(nt)}
-                      className="hover:text-brand-danger transition-colors"
-                      aria-label={`Remove node type filter: ${nt}`}
+                      onClick={() => { handleResetBm(); onQueryChange(""); }}
+                      className="text-xs text-link hover:text-link-hover transition-colors"
                     >
-                      ✕
+                      Clear all
                     </button>
-                  </span>
-                ))}
-                <button
-                  onClick={() => {
-                    setFilters(DEFAULT_FILTERS);
-                    setFlavorFilters(DEFAULT_FLAVOR_FILTERS);
-                    handleResetSiteTypeFilters();
-                    onQueryChange("");
-                  }}
-                  className="text-xs text-link hover:text-link-hover transition-colors"
-                >
-                  Clear all
-                </button>
-              </div>
-            )}
-
-            {/* Active filter chips — VM flavor views */}
-            {(!showBareMetal || cardView === "flavors") && anyVmFilter && (
-              <div className="flex items-center gap-1.5 flex-wrap">
-                {flavorFilters.hasGpu && (
-                  <span className="flex items-center gap-1 text-xs bg-purple-100 text-purple-700 px-2 py-0.5 rounded-full">
-                    Has GPU
-                    <button onClick={() => setFlavorFilters({ ...flavorFilters, hasGpu: false })} className="hover:text-purple-900 transition-colors" aria-label="Remove Has GPU filter">✕</button>
-                  </span>
-                )}
-                {flavorFilters.minVcpus !== null && (
-                  <span className="flex items-center gap-1 text-xs bg-purple-100 text-purple-700 px-2 py-0.5 rounded-full">
-                    ≥{flavorFilters.minVcpus} vCPUs
-                    <button onClick={() => setFlavorFilters({ ...flavorFilters, minVcpus: null })} className="hover:text-purple-900 transition-colors" aria-label="Remove vCPU filter">✕</button>
-                  </span>
-                )}
-                {flavorFilters.minRamBytes !== null && (
-                  <span className="flex items-center gap-1 text-xs bg-purple-100 text-purple-700 px-2 py-0.5 rounded-full">
-                    ≥{flavorFilters.minRamBytes / 1024 ** 3} GiB RAM
-                    <button onClick={() => setFlavorFilters({ ...flavorFilters, minRamBytes: null })} className="hover:text-purple-900 transition-colors" aria-label="Remove RAM filter">✕</button>
-                  </span>
-                )}
-                {flavorFilters.minDiskBytes !== null && (
-                  <span className="flex items-center gap-1 text-xs bg-purple-100 text-purple-700 px-2 py-0.5 rounded-full">
-                    ≥{flavorFilters.minDiskBytes / 1024 ** 3} GiB disk
-                    <button onClick={() => setFlavorFilters({ ...flavorFilters, minDiskBytes: null })} className="hover:text-purple-900 transition-colors" aria-label="Remove disk filter">✕</button>
-                  </span>
-                )}
-                {flavorFilters.maxSuPerHour !== null && (
-                  <span className="flex items-center gap-1 text-xs bg-purple-100 text-purple-700 px-2 py-0.5 rounded-full">
-                    ≤{flavorFilters.maxSuPerHour} SU/hr
-                    <button onClick={() => setFlavorFilters({ ...flavorFilters, maxSuPerHour: null })} className="hover:text-purple-900 transition-colors" aria-label="Remove cost filter">✕</button>
-                  </span>
-                )}
-                <button onClick={() => setFlavorFilters(DEFAULT_FLAVOR_FILTERS)} className="text-xs text-link hover:text-link-hover transition-colors">
-                  Clear all
-                </button>
-              </div>
-            )}
-
-            {/* Callout: VM filters active but currently viewing bare metal cards */}
-            {showVms && showBareMetal && cardView !== "flavors" && anyVmFilter && (
-              <div className="flex items-center gap-2 text-xs text-purple-700 bg-purple-50 border border-purple-200 rounded px-3 py-2">
-                <span>
-                  {sortedFlavors.length > 0
-                    ? `${sortedFlavors.length} virtual machine${sortedFlavors.length !== 1 ? "s" : ""} match — not visible in this view.`
-                    : "Virtual machine filters are active but not visible in this view."}
+                  )}
+                </div>
+                {isFetching && <span className="text-grey-med text-xs">Refreshing…</span>}
+                <span className="text-xs text-grey tabular-nums">
+                  {cardView === "type"
+                    ? `${typeGroups.length} node type${typeGroups.length !== 1 ? "s" : ""}`
+                    : `${sorted.length} node${sorted.length !== 1 ? "s" : ""}`}
                 </span>
+                <select
+                  value={sortKey}
+                  onChange={(e) => setSortKey(e.target.value as SortKey)}
+                  className="text-xs border border-grey-light rounded px-2 py-1 text-grey-dark bg-white focus:outline-none focus:ring-1 focus:ring-brand-info"
+                  aria-label="Sort by"
+                >
+                  <option value="default">Sort: Soonest available</option>
+                  <option value="ram-asc">Sort: RAM low → high</option>
+                  <option value="ram-desc">Sort: RAM high → low</option>
+                  <option value="alphabetical">Sort: Alphabetical</option>
+                </select>
+              </div>
+            )}
+
+            {isBmView && KVM_ENABLED && debouncedQuery.trim() && sortedFlavors.length > 0 && (
+              <div className="flex items-center gap-2 text-xs text-purple-700 bg-purple-50 border border-purple-200 rounded px-3 py-2">
+                <span>{sortedFlavors.length} VM flavor{sortedFlavors.length !== 1 ? "s" : ""} match your search.</span>
                 <button
-                  onClick={() => setCardView("flavors")}
+                  onClick={() => handleViewChange("vms")}
                   className="font-medium underline underline-offset-2 hover:text-purple-900 transition-colors whitespace-nowrap"
                 >
                   Switch to Virtual Machines →
@@ -717,31 +550,14 @@ export function DiscoveryPage({ cart, query, onQueryChange, onCartChange, onFlav
               </div>
             )}
 
-            {/* Callout: bare metal filters active but currently viewing VM flavor cards */}
-            {showBareMetal && cardView === "flavors" && anyBmFilter && (
-              <div className="flex items-center gap-2 text-xs text-blue-700 bg-blue-50 border border-blue-200 rounded px-3 py-2">
-                <span>
-                  {sorted.length > 0
-                    ? `${sorted.length} bare metal node${sorted.length !== 1 ? "s" : ""} match — not visible in this view.`
-                    : "Bare metal filters are active but not visible in this view."}
-                </span>
-                <button
-                  onClick={() => setCardView("individual")}
-                  className="font-medium underline underline-offset-2 hover:text-blue-900 transition-colors whitespace-nowrap"
-                >
-                  Switch to Bare Metal Nodes →
-                </button>
-              </div>
-            )}
-
             {/* Bare metal node cards */}
-            {showBareMetal && cardView !== "flavors" && (
+            {isBmView && (
               sorted.length === 0 && !isFetching ? (
                 <div className="flex flex-col items-center justify-center h-40 text-grey">
                   <p className="text-lg font-medium mb-2">No resources found</p>
                   <p className="text-sm">Try adjusting your filters or search query.</p>
                   <button
-                    onClick={handleResetFilters}
+                    onClick={handleResetBm}
                     className="mt-3 text-sm text-link hover:text-link-hover transition-colors"
                   >
                     Reset filters
@@ -766,7 +582,7 @@ export function DiscoveryPage({ cart, query, onQueryChange, onCartChange, onFlav
                           nodes={nodes}
                           siteName={siteMap.get(nodes[0].site_id)?.name ?? nodes[0].site_id}
                           selectedCount={nodes.filter((n) => cartIds.has(n.uid)).length}
-                          onSelect={(add) => handleGroupSelect(nodes, add)}
+                          onQuantityChange={(count) => handleNodeTypeQuantityChange(nodes, count)}
                           onClick={() => setSelectedNode(nodes[0])}
                         />
                       ))}
@@ -774,18 +590,71 @@ export function DiscoveryPage({ cart, query, onQueryChange, onCartChange, onFlav
               )
             )}
 
-            {/* VM flavor cards — Virtual Machines toggle or VMs-only mode */}
-            {showVms && (!showBareMetal || cardView === "flavors") && (
+            {/* VM flavor cards */}
+            {isVmView && (
               sortedFlavors.length === 0 && !flavorsFetching ? (
                 <div className="flex flex-col items-center justify-center h-40 text-grey">
                   <p className="text-sm font-medium mb-1">No flavors found</p>
                   <p className="text-xs">Try adjusting your search query or filters.</p>
+                  <button
+                    onClick={() => { setFlavorFilters(DEFAULT_FLAVOR_FILTERS); onQueryChange(""); }}
+                    className="mt-3 text-sm text-link hover:text-link-hover transition-colors"
+                  >
+                    Reset filters
+                  </button>
                 </div>
               ) : (
                 <>
                   <div className="bg-white border border-grey-light rounded-md p-6">
                     <FlavorCalendar siteId={KVM_SITE_ID} flavors={sortedFlavors} />
                   </div>
+                  <div className="flex items-center gap-3 border-b border-grey-light py-1">
+                    <div className="flex items-center gap-1.5 flex-wrap flex-1">
+                      {debouncedQuery.trim() && (
+                        <span className="flex items-center gap-1 text-xs bg-purple-100 text-purple-700 px-2 py-0.5 rounded-full">
+                          Search: &quot;{debouncedQuery.length > 24 ? `${debouncedQuery.slice(0, 24)}…` : debouncedQuery}&quot;
+                          <button onClick={() => onQueryChange("")} className="hover:text-purple-900 transition-colors" aria-label="Clear search">✕</button>
+                        </span>
+                      )}
+                      {flavorFilterChips.map((chip) => (
+                        <span key={chip.id} className="flex items-center gap-1 text-xs bg-purple-100 text-purple-700 px-2 py-0.5 rounded-full">
+                          {chip.label}
+                          <button onClick={() => setFlavorFilters(chip.clear(flavorFilters))} className="hover:text-purple-900 transition-colors" aria-label={`Remove filter: ${chip.label}`}>✕</button>
+                        </span>
+                      ))}
+                      {(flavorFilterChips.length > 0 || debouncedQuery.trim()) && (
+                        <button onClick={() => { setFlavorFilters(DEFAULT_FLAVOR_FILTERS); onQueryChange(""); }} className="text-xs text-link hover:text-link-hover transition-colors">
+                          Clear all
+                        </button>
+                      )}
+                    </div>
+                    {flavorsFetching && <span className="text-grey-med text-xs">Refreshing…</span>}
+                    <span className="text-xs text-grey tabular-nums">
+                      {`${sortedFlavors.length} flavor${sortedFlavors.length !== 1 ? "s" : ""}`}
+                    </span>
+                    <select
+                      value={sortKey}
+                      onChange={(e) => setSortKey(e.target.value as SortKey)}
+                      className="text-xs border border-grey-light rounded px-2 py-1 text-grey-dark bg-white focus:outline-none focus:ring-1 focus:ring-brand-info"
+                      aria-label="Sort by"
+                    >
+                      <option value="default">Sort: By vCPUs</option>
+                      <option value="ram-asc">Sort: RAM low → high</option>
+                      <option value="ram-desc">Sort: RAM high → low</option>
+                      <option value="alphabetical">Sort: Alphabetical</option>
+                    </select>
+                  </div>
+                  {debouncedQuery.trim() && sorted.length > 0 && (
+                    <div className="flex items-center gap-2 text-xs text-blue-700 bg-blue-50 border border-blue-200 rounded px-3 py-2">
+                      <span>{sorted.length} bare metal node{sorted.length !== 1 ? "s" : ""} match your search.</span>
+                      <button
+                        onClick={() => handleViewChange("bare-metal")}
+                        className="font-medium underline underline-offset-2 hover:text-blue-900 transition-colors whitespace-nowrap"
+                      >
+                        Switch to Bare Metal →
+                      </button>
+                    </div>
+                  )}
                   <div className="grid gap-3 grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">
                     {sortedFlavors.map((flavor) => (
                       <FlavorCard

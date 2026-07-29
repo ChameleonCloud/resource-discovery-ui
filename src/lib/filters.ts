@@ -7,7 +7,6 @@ export interface FilterState {
   arch: string | null;
   minRam: number | null;
   infiniband: boolean;
-  resourceType: "all" | "bare-metal" | "vms";
   availabilityWindow: "now" | "7d" | "custom"; // when a lease would start
   customStart: string;   // datetime-local string; empty = now
   customDuration: string; // hours, for custom window only: "1"|"6"|"24"|"72"|"168"|"336"|""; empty = unset
@@ -48,7 +47,6 @@ export const DEFAULT_FILTERS: FilterState = {
   arch: null,
   minRam: null,
   infiniband: false,
-  resourceType: "all",
   availabilityWindow: "now",
   customStart: "",
   customDuration: "",
@@ -321,14 +319,6 @@ function setChips<T, K extends keyof FilterState>(
 
 export function getActiveFilterChips(f: FilterState): FilterChip[] {
   const chips: FilterChip[] = [];
-
-  if (f.resourceType !== DEFAULT_FILTERS.resourceType) {
-    chips.push({
-      id: "resourceType",
-      label: f.resourceType === "vms" ? "Resource: Virtual machines" : "Resource: Bare metal",
-      clear: (cur) => ({ ...cur, resourceType: "all" }),
-    });
-  }
 
   if (f.hasGpu === true) {
     chips.push({ id: "hasGpu", label: "Has GPU", clear: (cur) => ({ ...cur, hasGpu: null, gpuModels: new Set() }) });

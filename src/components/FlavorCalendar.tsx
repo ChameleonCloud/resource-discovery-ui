@@ -1,6 +1,7 @@
 import { useState, useMemo, useRef, useEffect } from "react";
 import type { VmFlavor } from "../api/types";
 import { useFlavorAvailability } from "../hooks/useFlavorAvailability";
+import { toDateInput, truncateToHour } from "../lib/dateUtils";
 
 const CHART = {
   info: "#239ff0",
@@ -19,27 +20,23 @@ const DAY_MS = 24 * HOUR_MS;
 const HOUR_INTERVALS = [HOUR_MS, 2 * HOUR_MS, 3 * HOUR_MS, 6 * HOUR_MS, 12 * HOUR_MS];
 const DAY_INTERVALS = [DAY_MS, 2 * DAY_MS, 3 * DAY_MS, 7 * DAY_MS, 14 * DAY_MS];
 
+function presetBtnClass(n: 1 | 7 | 30, activePreset: 1 | 7 | 30 | null): string {
+  return `px-2 py-1 text-xs ${activePreset === n ? "bg-brand-info text-white" : "bg-white text-grey hover:bg-grey-lighter"}`;
+}
+
+function tickAnchor(x: number, containerWidth: number): "start" | "middle" | "end" {
+  return x <= SVG_PADDING.left + 24 ? "start" : x >= containerWidth - SVG_PADDING.right - 24 ? "end" : "middle";
+}
+
 interface FlavorCalendarProps {
   siteId: string;
   flavors: VmFlavor[];
-}
-
-function toDateInput(d: Date): string {
-  const y = d.getFullYear();
-  const m = String(d.getMonth() + 1).padStart(2, "0");
-  const day = String(d.getDate()).padStart(2, "0");
-  return `${y}-${m}-${day}`;
 }
 
 function parseUTC(s: string): Date {
   return new Date(s.endsWith("Z") || /[+-]\d{2}:\d{2}$/.test(s) ? s : s + "Z");
 }
 
-function truncateToHour(): Date {
-  const d = new Date();
-  d.setMinutes(0, 0, 0);
-  return d;
-}
 
 export function FlavorCalendar({ siteId, flavors }: FlavorCalendarProps) {
   const containerRef = useRef<HTMLDivElement>(null);
@@ -56,6 +53,8 @@ export function FlavorCalendar({ siteId, flavors }: FlavorCalendarProps) {
   const [selectedFlavorId, setSelectedFlavorId] = useState<string | null>(
     () => flavors[0]?.uid ?? null,
   );
+  const effectiveFlavorId =
+    flavors.find((f) => f.uid === selectedFlavorId)?.uid ?? flavors[0]?.uid ?? null;
   const [startDate, setStartDate] = useState<Date>(truncateToHour);
   const [endDate, setEndDate] = useState<Date>(() => {
     const d = truncateToHour();
@@ -116,7 +115,7 @@ export function FlavorCalendar({ siteId, flavors }: FlavorCalendarProps) {
 
   const { data, isLoading, isError } = useFlavorAvailability(
     siteId,
-    selectedFlavorId,
+    effectiveFlavorId,
     startDate,
     endDate,
   );
@@ -142,20 +141,17 @@ export function FlavorCalendar({ siteId, flavors }: FlavorCalendarProps) {
     }
     const areaD = `${stepD} V ${yS(0)} H ${xS(firstStart)} Z`;
 
-    // Short windows (≤1d) use hour ticks; longer windows use day ticks.
     const msPerPx = totalMs / Math.max(chartW, 1);
     const candidates = totalMs <= DAY_MS ? HOUR_INTERVALS : DAY_INTERVALS;
     const tickIntervalMs = candidates.find(i => i >= msPerPx * 80) ?? candidates[candidates.length - 1];
 
     const tickDates: Date[] = [];
     if (tickIntervalMs >= DAY_MS) {
-      // Align to local midnight so day labels match actual calendar days.
       const firstMidnight = new Date(startDate.getFullYear(), startDate.getMonth(), startDate.getDate() + 1);
       for (let t = firstMidnight.getTime(); t <= endDate.getTime(); t += tickIntervalMs) {
         tickDates.push(new Date(t));
       }
     } else {
-      // UTC epoch rounding aligns to local hours for whole-hour UTC offsets.
       const firstTickMs = Math.ceil(startDate.getTime() / tickIntervalMs) * tickIntervalMs;
       for (let t = firstTickMs; t <= endDate.getTime(); t += tickIntervalMs) {
         tickDates.push(new Date(t));
@@ -194,20 +190,14 @@ export function FlavorCalendar({ siteId, flavors }: FlavorCalendarProps) {
     return <p className="text-sm italic text-grey-med">No flavors available.</p>;
   }
 
-  const presetBtn = (n: 1 | 7 | 30) =>
-    `px-2 py-1 text-xs ${preset === n ? "bg-brand-info text-white" : "bg-white text-grey hover:bg-grey-lighter"}`;
-
-  const tickAnchor = (x: number): "start" | "middle" | "end" =>
-    x <= SVG_PADDING.left + 24 ? "start" : x >= containerWidth - SVG_PADDING.right - 24 ? "end" : "middle";
-
   return (
     <div>
       <h3 className="text-sm font-semibold text-grey-dark mb-3">Flavor Availability</h3>
 
       <div className="flex flex-wrap items-center gap-3 mb-4">
         <div className="flex rounded border border-grey-light overflow-hidden">
-          {([1, 7, 30] as const).map((n) => (
-            <button key={n} onClick={() => applyPreset(n)} className={presetBtn(n)}>
+          {([30, 7, 1] as const).map((n) => (
+            <button key={n} onClick={() => applyPreset(n)} className={presetBtnClass(n, preset)}>
               {n} day{n !== 1 ? "s" : ""}
             </button>
           ))}
@@ -254,7 +244,7 @@ export function FlavorCalendar({ siteId, flavors }: FlavorCalendarProps) {
         <div className="flex items-center gap-1 text-xs text-grey-dark">
           <span className="font-medium">Flavor</span>
           <select
-            value={selectedFlavorId ?? ""}
+            value={effectiveFlavorId ?? ""}
             onChange={(e) => setSelectedFlavorId(e.target.value || null)}
             className="border border-grey-light rounded px-1 py-0.5 text-xs"
           >
@@ -353,7 +343,7 @@ export function FlavorCalendar({ siteId, flavors }: FlavorCalendarProps) {
                     stroke={CHART.muted}
                     strokeWidth="0.5"
                   />
-                  <text x={x} y={SVG_HEIGHT - 2} textAnchor={tickAnchor(x)} fontSize="0.75rem" fill={CHART.text}>
+                  <text x={x} y={SVG_HEIGHT - 2} textAnchor={tickAnchor(x, containerWidth)} fontSize="0.75rem" fill={CHART.text}>
                     {label}
                   </text>
                 </g>
