@@ -114,6 +114,7 @@ export interface SearchNodeItem {
   uid: string;
   node_type: string;
   node_name?: string;
+  node_mode?: string;
   site_id: string;
   cluster_id: string;
   availability: "available" | "reserved" | "unknown" | "maintenance";

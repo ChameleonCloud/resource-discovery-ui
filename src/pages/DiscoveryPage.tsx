@@ -23,6 +23,7 @@ import { NodeDetail } from "../components/NodeDetail";
 import { FlavorCalendar } from "../components/FlavorCalendar";
 import { FlavorCard } from "../components/FlavorCard";
 import { FlavorDetail } from "../components/FlavorDetail";
+import { VmOnlyNodeCard } from "../components/VmOnlyNodeCard";
 import { SiteAvailabilityBars } from "../components/SiteAvailabilityBars";
 import { ReservationCalendar } from "../components/ReservationCalendar";
 
@@ -127,6 +128,12 @@ export function DiscoveryPage({ cart, query, onQueryChange, onCartChange, onFlav
       a.name.localeCompare(b.name)
     );
   }, [filteredFlavors, sortKey]);
+  const { data: kvmNodesData } = useNodeSearch({ site_id: KVM_SITE_ID, limit: 500 }, KVM_ENABLED);
+  const vmOnlyNodes = useMemo(
+    () => (kvmNodesData?.items ?? []).filter((n) => n.node_mode === "vm_only"),
+    [kvmNodesData],
+  );
+
   const queryClient = useQueryClient();
   useEffect(() => {
     if (!isVmView || sortedFlavors.length === 0) return;
@@ -667,6 +674,28 @@ export function DiscoveryPage({ cart, query, onQueryChange, onCartChange, onFlav
                       />
                     ))}
                   </div>
+                  {vmOnlyNodes.length > 0 && (
+                    <>
+                      <div className="flex items-center gap-3 mt-2">
+                        <div className="flex-1 border-t border-grey-light" />
+                        <span className="text-xs font-semibold uppercase tracking-wider text-grey">Physical Hardware for Virtual Machines</span>
+                        <div className="flex-1 border-t border-grey-light" />
+                      </div>
+                      <div className="bg-yellow-50 border border-yellow-300 rounded px-3 py-2 text-xs text-yellow-800">
+                        <strong>Note:</strong> These are example reference hardware nodes that your VMs may run on. Your VM may run on different hardware not shown here.
+                      </div>
+                      <div className="grid gap-3 grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">
+                        {vmOnlyNodes.map((node) => (
+                          <VmOnlyNodeCard
+                            key={node.uid}
+                            node={node}
+                            siteName={siteMap.get(node.site_id)?.name ?? node.site_id}
+                            onClick={() => setSelectedNode(node)}
+                          />
+                        ))}
+                      </div>
+                    </>
+                  )}
                 </>
               )
             )}
