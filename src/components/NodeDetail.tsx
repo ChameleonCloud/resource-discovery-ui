@@ -18,6 +18,7 @@ type Tab = "info" | "reserve";
 export function NodeDetail({ node, peerNodes, siteMap, reservationWindow, onClose }: Props) {
   const [tab, setTab] = useState<Tab>("info");
   const site = node ? siteMap.get(node.site_id) : null;
+  const hideAvailability = node?.node_mode === "vm_only";
 
   function handleOpenChange(open: boolean) {
     if (!open) {
@@ -55,21 +56,23 @@ export function NodeDetail({ node, peerNodes, siteMap, reservationWindow, onClos
               </Dialog.Close>
             </div>
 
-            <div className="flex">
-              {(["info", "reserve"] as Tab[]).map((t) => (
-                <button
-                  key={t}
-                  onClick={() => setTab(t)}
-                  className={`px-4 py-2 text-sm font-medium border-b-2 capitalize transition-colors ${
-                    tab === t
-                      ? "border-brand-info text-brand-info"
-                      : "border-transparent text-grey hover:text-grey-dark"
-                  }`}
-                >
-                  {t === "info" ? "Node Info" : "Reserve Node"}
-                </button>
-              ))}
-            </div>
+            {!hideAvailability && (
+              <div className="flex">
+                {(["info", "reserve"] as Tab[]).map((t) => (
+                  <button
+                    key={t}
+                    onClick={() => setTab(t)}
+                    className={`px-4 py-2 text-sm font-medium border-b-2 capitalize transition-colors ${
+                      tab === t
+                        ? "border-brand-info text-brand-info"
+                        : "border-transparent text-grey hover:text-grey-dark"
+                    }`}
+                  >
+                    {t === "info" ? "Node Info" : "Reserve Node"}
+                  </button>
+                ))}
+              </div>
+            )}
           </div>
 
           {node && (
@@ -80,26 +83,28 @@ export function NodeDetail({ node, peerNodes, siteMap, reservationWindow, onClos
                 </div>
               )}
 
-              {tab === "info" && (
+              {(tab === "info" || hideAvailability) && (
                 <>
                   <section>
                     <h3 className="text-xs font-semibold uppercase tracking-wider text-grey mb-3">Specifications</h3>
                     <NodeSpecSummary node={node} />
                   </section>
 
-                  <section>
-                    <AvailabilityCalendar
-                      node={node}
-                      peerNodes={peerNodes}
-                      siteName={site?.name ?? node.site_id}
-                    />
-                  </section>
+                  {!hideAvailability && (
+                    <section>
+                      <AvailabilityCalendar
+                        node={node}
+                        peerNodes={peerNodes}
+                        siteName={site?.name ?? node.site_id}
+                      />
+                    </section>
+                  )}
 
                   <NodeSpecDetails node={node} />
                 </>
               )}
 
-              {tab === "reserve" && (
+              {!hideAvailability && tab === "reserve" && (
                 <section>
                   <ReservationSnippets nodes={[node]} sites={site ? [site] : undefined} horizonUrl={site?.web} reservationWindow={reservationWindow} />
                 </section>
