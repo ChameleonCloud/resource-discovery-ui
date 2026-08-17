@@ -60,6 +60,7 @@ export interface StorageDevice {
   driver?: string;
   humanized_size?: string;
   interface?: string;
+  media_type?: string;
   model?: string;
   rev?: string;
   size?: number;
@@ -72,7 +73,7 @@ export interface StorageDevice {
 export interface NetworkAdapter {
   device?: string;
   driver?: string | null;
-  enabled?: boolean;
+  enabled?: boolean | string;
   interface?: string | null;
   mac?: string | null;
   management?: boolean | null;
@@ -118,6 +119,7 @@ export interface SearchNodeItem {
   site_id: string;
   cluster_id: string;
   availability: "available" | "reserved" | "unknown" | "maintenance";
+  boot_mode?: string;
   gpu?: GpuInfo;
   fpga?: FpgaInfo;
   processor?: CpuInfo;
