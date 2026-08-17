@@ -35,6 +35,13 @@ const AVAILABILITY_TITLES = {
 
 export function NodeSpecGrid({ node }: { node: SearchNodeItem }) {
   const hasGpu = node.gpu?.gpu ?? false;
+  const gpuLabel = hasGpu
+    ? [
+        node.gpu?.gpu_count ? `${node.gpu.gpu_count}×` : null,
+        node.gpu?.gpu_vendor,
+        node.gpu?.gpu_model ?? "Yes",
+      ].filter(Boolean).join(" ")
+    : "No";
 
   return (
     <div className="grid grid-cols-2 gap-x-4 gap-y-1 text-xs text-grey">
@@ -44,8 +51,8 @@ export function NodeSpecGrid({ node }: { node: SearchNodeItem }) {
         </span>
       ) : null}
       <span>RAM: {formatRam(node.main_memory?.ram_size)}</span>
-      <span className="truncate" title={hasGpu ? (node.gpu?.gpu_model ?? "Yes") : undefined}>
-        GPU: {hasGpu ? (node.gpu?.gpu_model ?? "Yes") : "No"}
+      <span className="truncate" title={hasGpu ? gpuLabel : undefined}>
+        GPU: {gpuLabel}
       </span>
       {node.architecture?.platform_type && <span>Arch: {node.architecture.platform_type}</span>}
       {node.infiniband && <span>InfiniBand</span>}

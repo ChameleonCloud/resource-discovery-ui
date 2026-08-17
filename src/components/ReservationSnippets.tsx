@@ -1,8 +1,8 @@
-import { useState, useMemo, useEffect } from "react";
+import { Fragment, useState, useMemo, useEffect } from "react";
 import { useQueries } from "@tanstack/react-query";
-import type { SearchNodeItem, Site, VmFlavor, NetworkAdapter, StorageDevice } from "../api/types";
+import type { SearchNodeItem, Site, VmFlavor, StorageDevice } from "../api/types";
 import { formatRam, findNextAvailableWindow } from "../lib/availability";
-import { formatBytes } from "../lib/filters";
+import { formatBytes, hasNvme, hasGpuDirect, hasNvmeOf, activeDeviceCount, isDeviceSsd, isAdapterEnabled } from "../lib/filters";
 import { fetchNodeAvailability } from "../api/client";
 
 type Mode = "cli" | "python" | "horizon";
@@ -614,6 +614,16 @@ function ExpandableSection({ title, children }: { title: string; children: React
   );
 }
 
+function formatTotalStorage(devices: StorageDevice[]): string {
+  const total = devices.reduce((sum, d) => sum + (d.size ?? 0), 0);
+  if (total === 0) return "—";
+  const GB = 1e9;
+  const TB = 1e12;
+  if (total < 200 * GB) return "< 200 GB";
+  if (total < 400 * GB) return "200–400 GB";
+  if (total < TB) return "400 GB–1 TB";
+  return "> 1 TB";
+}
 
 function formatRate(bps?: number): string {
   if (bps == null) return "—";
@@ -627,6 +637,7 @@ export function NodeSpecSummary({ node }: { node: SearchNodeItem }) {
   const cpu = node.processor;
   const arch = node.architecture;
   const mem = node.main_memory;
+  const storage = node.storage_devices ?? [];
 
   return (
     <dl className="grid grid-cols-2 gap-x-4 gap-y-1 text-sm">
@@ -634,19 +645,25 @@ export function NodeSpecSummary({ node }: { node: SearchNodeItem }) {
       {node.node_name && <SpecRow label="Node name" value={node.node_name} />}
       <SpecRow label="UUID" value={<span className="font-mono text-xs break-all">{node.uid}</span>} />
       <SpecRow label="Site" value={node.site_id} />
+      {arch?.platform_type && (
+        <SpecRow label="Architecture" value={arch.platform_type} />
+      )}
+
       {cpu?.other_description
         ? <SpecRow label="CPU" value={cpu.other_description} />
         : cpu?.model
         ? <SpecRow label="CPU" value={`${cpu.vendor ? cpu.vendor + " " : ""}${cpu.model}`} />
         : null}
       <SpecRow label="RAM" value={mem?.humanized_ram_size ?? formatRam(mem?.ram_size)} />
-      {node.gpu?.gpu && (
-        <SpecRow label="GPU" value={node.gpu.gpu_model ?? "Yes"} />
+      {storage.length > 0 && (
+        <SpecRow label="Total storage" value={formatTotalStorage(storage)} />
       )}
-      {arch?.platform_type && (
-        <SpecRow label="Architecture" value={arch.platform_type} />
-      )}
-      {node.infiniband && <SpecRow label="InfiniBand" value="Yes" />}
+      <SpecRow
+        label="GPU"
+        value={node.gpu?.gpu
+          ? [node.gpu.gpu_vendor, node.gpu.gpu_model ?? "Yes"].filter(Boolean).join(" ")
+          : "No"}
+      />
       <SpecRow
         label="Availability"
         value={
@@ -665,72 +682,127 @@ export function NodeSpecDetails({ node }: { node: SearchNodeItem }) {
   const adapters = node.network_adapters ?? [];
   const storage = node.storage_devices ?? [];
 
-  const hasDetails =
-    cpu || adapters.length > 0 || storage.length > 0 ||
-    node.bios || node.chassis || node.placement ||
-    node.supported_job_types || node.monitoring;
-
-  if (!hasDetails) return null;
-
   return (
     <div>
       {cpu && (
         <ExpandableSection title="Processor details">
+          {(cpu.vendor || cpu.other_description || cpu.model) && <SpecRow label="Model" value={[cpu.vendor, cpu.other_description ?? cpu.model].filter(Boolean).join(" ")} />}
+          {cpu.version && <SpecRow label="Version" value={cpu.version} />}
           {cpu.instruction_set && <SpecRow label="Instruction set" value={cpu.instruction_set} />}
           {cpu.clock_speed && <SpecRow label="Clock speed" value={`${(cpu.clock_speed / 1e9).toFixed(2)} GHz`} />}
           {arch?.smp_size && <SpecRow label="Sockets" value={arch.smp_size} />}
           {arch?.smt_size && <SpecRow label="Threads" value={arch.smt_size} />}
           {cpu.cache_l1d && <SpecRow label="L1d cache" value={formatBytes(cpu.cache_l1d)} />}
           {cpu.cache_l1i && <SpecRow label="L1i cache" value={formatBytes(cpu.cache_l1i)} />}
+          {cpu.cache_l1 && !cpu.cache_l1d && !cpu.cache_l1i && <SpecRow label="L1 cache" value={formatBytes(cpu.cache_l1)} />}
           {cpu.cache_l2 && <SpecRow label="L2 cache" value={formatBytes(cpu.cache_l2)} />}
           {cpu.cache_l3 && <SpecRow label="L3 cache" value={formatBytes(cpu.cache_l3)} />}
         </ExpandableSection>
       )}
 
-      {adapters.length > 0 && (
-        <ExpandableSection title={`Network (${adapters.length} adapter${adapters.length !== 1 ? "s" : ""})`}>
-          {adapters.map((a: NetworkAdapter, i: number) => (
-            <div key={i} className="col-span-2 text-xs border-t border-grey-light pt-1 mt-1 first:border-0 first:pt-0 first:mt-0">
-              <p className="font-medium text-grey-dark">{a.device} — {formatRate(a.rate)}</p>
-              {a.model && <p className="text-grey">{a.model}</p>}
-              {a.vendor && <p className="text-grey">{a.vendor}</p>}
-            </div>
-          ))}
+      <ExpandableSection title="GPU">
+        {node.gpu?.gpu ? (
+          <>
+            {!!node.gpu.gpu_count && <SpecRow label="Count" value={node.gpu.gpu_count} />}
+            {node.gpu.gpu_vendor && <SpecRow label="Vendor" value={node.gpu.gpu_vendor} />}
+            {node.gpu.gpu_model && <SpecRow label="Model" value={node.gpu.gpu_model} />}
+            {node.gpu.gpu_memory != null && <SpecRow label="Memory" value={formatBytes(node.gpu.gpu_memory)} />}
+          </>
+        ) : (
+          <SpecRow label="GPU" value="No" />
+        )}
+      </ExpandableSection>
+
+      {node.fpga && (
+        <ExpandableSection title="FPGA">
+          {node.fpga.board_vendor && <SpecRow label="Vendor" value={node.fpga.board_vendor} />}
+          {node.fpga.board_model && <SpecRow label="Model" value={node.fpga.board_model} />}
         </ExpandableSection>
       )}
 
-      {storage.length > 0 && (
-        <ExpandableSection title={`Storage (${storage.length} device${storage.length !== 1 ? "s" : ""})`}>
-          {storage.map((d: StorageDevice, i: number) => (
-            <div key={i} className="col-span-2 text-xs border-t border-grey-light pt-1 mt-1 first:border-0 first:pt-0 first:mt-0">
-              <p className="font-medium text-grey-dark">{d.device} — {d.humanized_size ?? formatBytes(d.size)}</p>
-              {d.model && <p className="text-grey">{d.vendor ? `${d.vendor} ` : ""}{d.model}</p>}
-              {d.interface && <p className="text-grey">{d.interface}{d.driver ? ` · ${d.driver}` : ""}</p>}
-            </div>
-          ))}
-        </ExpandableSection>
-      )}
+      <ExpandableSection title="Storage">
+        {storage.length > 0 ? storage.map((d, i) => (
+          <Fragment key={i}>
+            {storage.length > 1 && (
+              <dt className="col-span-2 text-xs font-medium text-grey-dark border-t border-grey-light mt-1 pt-1 first:border-0 first:mt-0 first:pt-0">
+                {d.device ?? `Device ${i + 1}`}
+              </dt>
+            )}
+            {storage.length === 1 && d.device && <SpecRow label="Device" value={d.device} />}
+            <SpecRow label="Size" value={d.humanized_size ?? formatBytes(d.size)} />
+            {d.model && <SpecRow label="Model" value={`${d.vendor ? d.vendor + " " : ""}${d.model}`} />}
+            {[d.media_type, d.interface, d.driver].some(Boolean) && (
+              <SpecRow label="Type" value={[d.media_type, d.interface, d.driver].filter(Boolean).join(" · ")} />
+            )}
+            <SpecRow label="SSD" value={isDeviceSsd(d) ? "Yes" : "No"} />
+            {d.rev && <SpecRow label="Rev" value={d.rev} />}
+            {d.serial && <SpecRow label="S/N" value={<span className="font-mono">{d.serial}</span>} />}
+            {d.wwn && <SpecRow label="WWN" value={<span className="font-mono">{d.wwn}</span>} />}
+          </Fragment>
+        )) : (
+          <SpecRow label="Devices" value="None" />
+        )}
+      </ExpandableSection>
 
-      {(node.bios) && (
+      <ExpandableSection title="Placement">
+        {node.placement?.rack != null
+          ? <SpecRow label="Rack" value={node.placement.rack} />
+          : <SpecRow label="Rack" value="—" />}
+        {node.placement?.node != null && <SpecRow label="Node position" value={node.placement.node} />}
+      </ExpandableSection>
+
+      <ExpandableSection title="Network">
+        {adapters.length > 0 ? (
+          <>
+            <SpecRow label="Active devices" value={activeDeviceCount(node)} />
+            {adapters.map((a, i) => (
+              <Fragment key={i}>
+                {adapters.length > 1 && (
+                  <dt className="col-span-2 text-xs font-medium text-grey-dark border-t border-grey-light mt-1 pt-1 first:border-0 first:mt-0 first:pt-0">
+                    {a.device ?? `Adapter ${i + 1}`}
+                  </dt>
+                )}
+                {adapters.length === 1 && a.device && <SpecRow label="Device" value={a.device} />}
+                <SpecRow label="Rate" value={formatRate(a.rate)} />
+                {a.model && <SpecRow label="Model" value={a.model} />}
+                {a.vendor && <SpecRow label="Vendor" value={a.vendor} />}
+                {a.interface && <SpecRow label="Interface" value={a.interface} />}
+                {a.driver && <SpecRow label="Driver" value={a.driver} />}
+                <SpecRow label="Enabled" value={isAdapterEnabled(a.enabled) ? "Yes" : "No"} />
+                {a.mac && <SpecRow label="MAC" value={<span className="font-mono">{a.mac}</span>} />}
+                {a.management != null && <SpecRow label="Management" value={a.management ? "Yes" : "No"} />}
+              </Fragment>
+            ))}
+          </>
+        ) : (
+          <SpecRow label="Adapters" value="None" />
+        )}
+      </ExpandableSection>
+
+      <ExpandableSection title="NVMe">
+        <SpecRow label="NVMe" value={hasNvme(node) ? "Yes" : "No"} />
+      </ExpandableSection>
+
+      <ExpandableSection title="RDMA">
+        <SpecRow label="InfiniBand" value={node.infiniband ? "Yes" : "No"} />
+        <SpecRow label="GPUDirect" value={hasGpuDirect(node) ? "Yes" : "No"} />
+        <SpecRow label="NVMEoF" value={hasNvmeOf(node) ? "Yes" : "No"} />
+      </ExpandableSection>
+
+      {node.bios && (
         <ExpandableSection title="BIOS">
           {node.bios.vendor && <SpecRow label="Vendor" value={node.bios.vendor} />}
           {node.bios.version && <SpecRow label="Version" value={node.bios.version} />}
           {node.bios.release_date && <SpecRow label="Release date" value={node.bios.release_date} />}
+          {node.boot_mode && <SpecRow label="Boot mode" value={node.boot_mode.toUpperCase()} />}
         </ExpandableSection>
       )}
 
-      {(node.chassis) && (
+      {node.chassis && (
         <ExpandableSection title="Chassis">
           {node.chassis.manufacturer && <SpecRow label="Manufacturer" value={node.chassis.manufacturer} />}
           {node.chassis.name && <SpecRow label="Name" value={node.chassis.name} />}
           {node.chassis.serial && <SpecRow label="Serial" value={node.chassis.serial} />}
-        </ExpandableSection>
-      )}
-
-      {(node.placement) && (
-        <ExpandableSection title="Placement">
-          {node.placement.rack != null && <SpecRow label="Rack" value={node.placement.rack} />}
-          {node.placement.node != null && <SpecRow label="Node position" value={node.placement.node} />}
         </ExpandableSection>
       )}
 

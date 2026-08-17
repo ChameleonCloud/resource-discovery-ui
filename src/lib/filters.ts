@@ -1,4 +1,4 @@
-import type { SearchNodeItem } from "../api/types";
+import type { SearchNodeItem, StorageDevice } from "../api/types";
 import { RAM_TIERS } from "./availability";
 
 export interface FilterState {
@@ -118,12 +118,25 @@ export function hasNvme(n: SearchNodeItem): boolean {
   );
 }
 
+export function isDeviceSsd(d: StorageDevice): boolean {
+  return (
+    d.ssd === true ||
+    d.media_type?.toLowerCase() === "ssd" ||
+    (d.ssd !== false && (d.model?.toLowerCase().includes("ssd") ?? false))
+  );
+}
+
 export function hasSsd(n: SearchNodeItem): boolean {
-  return (n.storage_devices ?? []).some((d) => d.ssd === true) || hasNvme(n);
+  return (n.storage_devices ?? []).some(isDeviceSsd) || hasNvme(n);
+}
+
+export function isAdapterEnabled(enabled: boolean | string | undefined | null): boolean {
+  if (typeof enabled === "string") return enabled.toLowerCase() === "true";
+  return !!enabled;
 }
 
 export function activeDeviceCount(n: SearchNodeItem): number {
-  return (n.network_adapters ?? []).filter((a) => a.enabled).length;
+  return (n.network_adapters ?? []).filter((a) => isAdapterEnabled(a.enabled)).length;
 }
 
 function hasNvmePcie(n: SearchNodeItem): boolean {
