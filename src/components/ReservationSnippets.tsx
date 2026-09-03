@@ -645,6 +645,7 @@ export function NodeSpecSummary({ node }: { node: SearchNodeItem }) {
       {node.node_name && <SpecRow label="Node name" value={node.node_name} />}
       <SpecRow label="UUID" value={<span className="font-mono text-xs break-all">{node.uid}</span>} />
       <SpecRow label="Site" value={node.site_id} />
+      <SpecRow label="Cluster" value={node.cluster_id} />
       {arch?.platform_type && (
         <SpecRow label="Architecture" value={arch.platform_type} />
       )}
@@ -763,6 +764,7 @@ export function NodeSpecDetails({ node }: { node: SearchNodeItem }) {
                   </dt>
                 )}
                 {adapters.length === 1 && a.device && <SpecRow label="Device" value={a.device} />}
+                {a.name && <SpecRow label="Name" value={a.name} />}
                 <SpecRow label="Rate" value={formatRate(a.rate)} />
                 {a.model && <SpecRow label="Model" value={a.model} />}
                 {a.vendor && <SpecRow label="Vendor" value={a.vendor} />}
@@ -771,6 +773,8 @@ export function NodeSpecDetails({ node }: { node: SearchNodeItem }) {
                 <SpecRow label="Enabled" value={isAdapterEnabled(a.enabled) ? "Yes" : "No"} />
                 {a.mac && <SpecRow label="MAC" value={<span className="font-mono">{a.mac}</span>} />}
                 {a.management != null && <SpecRow label="Management" value={a.management ? "Yes" : "No"} />}
+                {a.bridged != null && <SpecRow label="Bridged" value={a.bridged ? "Yes" : "No"} />}
+                {a.mounted != null && <SpecRow label="Mounted" value={a.mounted ? "Yes" : "No"} />}
               </Fragment>
             ))}
           </>

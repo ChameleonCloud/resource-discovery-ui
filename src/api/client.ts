@@ -5,7 +5,9 @@ import type {
   NodeAvailabilityResponse,
   NodeSearchParams,
   NodeSearchResponse,
+  SearchNodeItem,
   SiteCollection,
+  VmFlavor,
 } from "./types";
 
 declare global {
@@ -16,13 +18,24 @@ declare global {
 
 const BASE = import.meta.env.VITE_API_BASE_URL ?? "/api";
 
+export class ApiError extends Error {
+  constructor(readonly status: number, path: string) {
+    super(`API ${status}: ${path}`);
+  }
+}
+
+/** Escapes one path segment, so a caller-supplied id cannot reach another endpoint. */
+function segment(value: string): string {
+  return encodeURIComponent(value);
+}
+
 async function apiFetch<T>(path: string, init?: RequestInit): Promise<T> {
   const res = await fetch(`${BASE}${path}`, {
     headers: { Accept: "application/json" },
     ...init,
   });
   if (!res.ok) {
-    throw new Error(`API ${res.status}: ${path}`);
+    throw new ApiError(res.status, path);
   }
   return res.json() as Promise<T>;
 }
@@ -46,8 +59,23 @@ export function fetchNodeSearch(params: NodeSearchParams): Promise<NodeSearchRes
   return apiFetch<NodeSearchResponse>(`/nodes/search?${q}`);
 }
 
+/** Fetches one node, with site and cluster filled from the arguments and availability unknown. */
+export async function fetchNode(
+  siteId: string,
+  clusterId: string,
+  nodeId: string,
+): Promise<SearchNodeItem> {
+  const path = `/sites/${segment(siteId)}/clusters/${segment(clusterId)}/nodes/${segment(nodeId)}`;
+  const node = await apiFetch<Omit<SearchNodeItem, "site_id" | "cluster_id" | "availability">>(path);
+  return { ...node, site_id: siteId, cluster_id: clusterId, availability: "unknown" };
+}
+
 export function fetchSiteFlavors(siteId: string): Promise<FlavorCollection> {
   return apiFetch<FlavorCollection>(`/sites/${siteId}/flavors?limit=500`);
+}
+
+export function fetchFlavor(siteId: string, flavorId: string): Promise<VmFlavor> {
+  return apiFetch<VmFlavor>(`/sites/${segment(siteId)}/flavors/${segment(flavorId)}`);
 }
 
 export function fetchSiteAvailabilityStatus(siteId: string): Promise<{ site_id: string; last_synced: string; synced_node_count: number }> {
