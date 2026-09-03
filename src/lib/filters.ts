@@ -14,13 +14,17 @@ export interface FilterState {
   // Advanced
   cpuModels: Set<string>;
   cpuVendors: Set<string>;
+  cpuCounts: Set<number>;
+  threadCounts: Set<number>;
   cpuClockSpeeds: Set<number>;
+  cpuCacheL1: Set<number>;
   cpuCacheL1d: Set<number>;
   cpuCacheL1i: Set<number>;
   cpuCacheL2: Set<number>;
   cpuCacheL3: Set<number>;
   cpuVersions: Set<string>;
   cpuOtherDescriptions: Set<string>;
+  ramSizes: Set<number>;
   gpuCounts: Set<number>;
   gpuVendors: Set<string>;
   gpuMemories: Set<number>;
@@ -30,6 +34,7 @@ export interface FilterState {
   netVendors: Set<string>;
   netNames: Set<string>;
   activeDeviceCounts: Set<number>;
+  storageTotals: Set<string>;
   storageModels: Set<string>;
   storageVendors: Set<string>;
   storageSerials: Set<string>;
@@ -53,13 +58,17 @@ export const DEFAULT_FILTERS: FilterState = {
   duration: "any",
   cpuModels: new Set(),
   cpuVendors: new Set(),
+  cpuCounts: new Set(),
+  threadCounts: new Set(),
   cpuClockSpeeds: new Set(),
+  cpuCacheL1: new Set(),
   cpuCacheL1d: new Set(),
   cpuCacheL1i: new Set(),
   cpuCacheL2: new Set(),
   cpuCacheL3: new Set(),
   cpuVersions: new Set(),
   cpuOtherDescriptions: new Set(),
+  ramSizes: new Set(),
   gpuCounts: new Set(),
   gpuVendors: new Set(),
   gpuMemories: new Set(),
@@ -69,6 +78,7 @@ export const DEFAULT_FILTERS: FilterState = {
   netVendors: new Set(),
   netNames: new Set(),
   activeDeviceCounts: new Set(),
+  storageTotals: new Set(),
   storageModels: new Set(),
   storageVendors: new Set(),
   storageSerials: new Set(),
@@ -139,6 +149,25 @@ export function activeDeviceCount(n: SearchNodeItem): number {
   return (n.network_adapters ?? []).filter((a) => isAdapterEnabled(a.enabled)).length;
 }
 
+const GiB = 1024 ** 3;
+
+export function ramSizeGib(n: SearchNodeItem): number {
+  return Math.round((n.main_memory?.ram_size ?? 0) / GiB);
+}
+
+export const STORAGE_TOTAL_TIERS: { label: string; min: number; max: number }[] = [
+  { label: "< 200 GiB", min: 0, max: 200 * GiB },
+  { label: "200–400 GiB", min: 200 * GiB, max: 400 * GiB },
+  { label: "400 GiB – 1 TiB", min: 400 * GiB, max: 1024 * GiB },
+  { label: "> 1 TiB", min: 1024 * GiB, max: Infinity },
+];
+
+/** Whether a node's storage devices sum to a size within the given tier. */
+export function inStorageTier(n: SearchNodeItem, tier: { min: number; max: number }): boolean {
+  const total = (n.storage_devices ?? []).reduce((sum, d) => sum + (d.size ?? 0), 0);
+  return total >= tier.min && total < tier.max;
+}
+
 function hasNvmePcie(n: SearchNodeItem): boolean {
   return (n.storage_devices ?? []).some(
     (d) => d.driver?.toLowerCase() === "nvme" || (d.interface ?? "").toLowerCase() === "pcie",
@@ -166,13 +195,17 @@ export function applyFilters(nodes: SearchNodeItem[], f: FilterState): SearchNod
     if (f.infiniband && !n.infiniband) return false;
     if (f.cpuModels.size > 0 && !f.cpuModels.has(n.processor?.other_description ?? n.processor?.model ?? "")) return false;
     if (f.cpuVendors.size > 0 && !f.cpuVendors.has(n.processor?.vendor ?? "")) return false;
+    if (f.cpuCounts.size > 0 && !f.cpuCounts.has(n.architecture?.smp_size ?? 0)) return false;
+    if (f.threadCounts.size > 0 && !f.threadCounts.has(n.architecture?.smt_size ?? 0)) return false;
     if (f.cpuClockSpeeds.size > 0 && !f.cpuClockSpeeds.has(n.processor?.clock_speed ?? 0)) return false;
+    if (f.cpuCacheL1.size > 0 && !f.cpuCacheL1.has(n.processor?.cache_l1 ?? 0)) return false;
     if (f.cpuCacheL1d.size > 0 && !f.cpuCacheL1d.has(n.processor?.cache_l1d ?? 0)) return false;
     if (f.cpuCacheL1i.size > 0 && !f.cpuCacheL1i.has(n.processor?.cache_l1i ?? 0)) return false;
     if (f.cpuCacheL2.size > 0 && !f.cpuCacheL2.has(n.processor?.cache_l2 ?? 0)) return false;
     if (f.cpuCacheL3.size > 0 && !f.cpuCacheL3.has(n.processor?.cache_l3 ?? 0)) return false;
     if (f.cpuVersions.size > 0 && !f.cpuVersions.has(n.processor?.version ?? "")) return false;
     if (f.cpuOtherDescriptions.size > 0 && !f.cpuOtherDescriptions.has(n.processor?.other_description ?? "")) return false;
+    if (f.ramSizes.size > 0 && !f.ramSizes.has(ramSizeGib(n))) return false;
     if (f.gpuCounts.size > 0 && !f.gpuCounts.has(n.gpu?.gpu_count ?? 0)) return false;
     if (f.gpuVendors.size > 0 && !f.gpuVendors.has(n.gpu?.gpu_vendor ?? "")) return false;
     if (f.gpuMemories.size > 0 && !f.gpuMemories.has(n.gpu?.gpu_memory ?? 0)) return false;
@@ -182,6 +215,7 @@ export function applyFilters(nodes: SearchNodeItem[], f: FilterState): SearchNod
     if (f.netVendors.size > 0 && !(n.network_adapters ?? []).some((a) => a.vendor && f.netVendors.has(a.vendor))) return false;
     if (f.netNames.size > 0 && !(n.network_adapters ?? []).some((a) => a.device && f.netNames.has(a.device))) return false;
     if (f.activeDeviceCounts.size > 0 && !f.activeDeviceCounts.has(activeDeviceCount(n))) return false;
+    if (f.storageTotals.size > 0 && !STORAGE_TOTAL_TIERS.some((t) => f.storageTotals.has(t.label) && inStorageTier(n, t))) return false;
     if (f.storageModels.size > 0 && !(n.storage_devices ?? []).some((d) => d.model && f.storageModels.has(d.model))) return false;
     if (f.storageVendors.size > 0 && !(n.storage_devices ?? []).some((d) => d.vendor && f.storageVendors.has(d.vendor))) return false;
     if (f.storageSerials.size > 0 && !(n.storage_devices ?? []).some((d) => d.serial && f.storageSerials.has(d.serial))) return false;
@@ -232,13 +266,19 @@ export function countWhere(nodes: SearchNodeItem[], pred: (n: SearchNodeItem) =>
   return nodes.filter(pred).length;
 }
 
+function compareFacetValues<T>(a: T, b: T): number {
+  if (typeof a === "number" && typeof b === "number") return a - b;
+  const [sa, sb] = [String(a), String(b)];
+  return sa < sb ? -1 : sa > sb ? 1 : 0;
+}
+
 export function uniqueValues<T>(nodes: SearchNodeItem[], fn: (n: SearchNodeItem) => T | undefined): T[] {
   const seen = new Set<T>();
   for (const n of nodes) {
     const v = fn(n);
     if (v !== undefined) seen.add(v);
   }
-  return Array.from(seen).sort();
+  return Array.from(seen).sort(compareFacetValues);
 }
 
 export function uniqueNestedValues<T extends string | number>(
@@ -258,13 +298,17 @@ export function hasAnyAdvancedFilter(f: FilterState): boolean {
   return (
     f.cpuModels.size > 0 ||
     f.cpuVendors.size > 0 ||
+    f.cpuCounts.size > 0 ||
+    f.threadCounts.size > 0 ||
     f.cpuClockSpeeds.size > 0 ||
+    f.cpuCacheL1.size > 0 ||
     f.cpuCacheL1d.size > 0 ||
     f.cpuCacheL1i.size > 0 ||
     f.cpuCacheL2.size > 0 ||
     f.cpuCacheL3.size > 0 ||
     f.cpuVersions.size > 0 ||
     f.cpuOtherDescriptions.size > 0 ||
+    f.ramSizes.size > 0 ||
     f.gpuCounts.size > 0 ||
     f.gpuVendors.size > 0 ||
     f.gpuMemories.size > 0 ||
@@ -274,6 +318,7 @@ export function hasAnyAdvancedFilter(f: FilterState): boolean {
     f.netVendors.size > 0 ||
     f.netNames.size > 0 ||
     f.activeDeviceCounts.size > 0 ||
+    f.storageTotals.size > 0 ||
     f.storageModels.size > 0 ||
     f.storageVendors.size > 0 ||
     f.storageSerials.size > 0 ||
@@ -387,13 +432,17 @@ export function getActiveFilterChips(f: FilterState): FilterChip[] {
   // Advanced filters
   chips.push(...setChips(f.cpuModels, "cpuModels", "CPU", (v) => v));
   chips.push(...setChips(f.cpuVendors, "cpuVendors", "CPU Vendor", (v) => v));
+  chips.push(...setChips(f.cpuCounts, "cpuCounts", "# CPUs", (v) => String(v)));
+  chips.push(...setChips(f.threadCounts, "threadCounts", "# Threads", (v) => String(v)));
   chips.push(...setChips(f.cpuClockSpeeds, "cpuClockSpeeds", "Clock", formatHz));
+  chips.push(...setChips(f.cpuCacheL1, "cpuCacheL1", "Cache L1", formatBytes));
   chips.push(...setChips(f.cpuCacheL1d, "cpuCacheL1d", "Cache L1d", formatBytes));
   chips.push(...setChips(f.cpuCacheL1i, "cpuCacheL1i", "Cache L1i", formatBytes));
   chips.push(...setChips(f.cpuCacheL2, "cpuCacheL2", "Cache L2", formatBytes));
   chips.push(...setChips(f.cpuCacheL3, "cpuCacheL3", "Cache L3", formatBytes));
   chips.push(...setChips(f.cpuVersions, "cpuVersions", "CPU Version", (v) => v));
   chips.push(...setChips(f.cpuOtherDescriptions, "cpuOtherDescriptions", "CPU", (v) => v));
+  chips.push(...setChips(f.ramSizes, "ramSizes", "RAM Size", (v) => `${v} GiB`));
   chips.push(...setChips(f.gpuCounts, "gpuCounts", "GPU Count", (v) => String(v)));
   chips.push(...setChips(f.gpuVendors, "gpuVendors", "GPU Vendor", (v) => v));
   chips.push(...setChips(f.gpuMemories, "gpuMemories", "GPU Memory", formatBytes));
@@ -403,6 +452,7 @@ export function getActiveFilterChips(f: FilterState): FilterChip[] {
   chips.push(...setChips(f.netVendors, "netVendors", "NIC Vendor", (v) => v));
   chips.push(...setChips(f.netNames, "netNames", "NIC", (v) => v));
   chips.push(...setChips(f.activeDeviceCounts, "activeDeviceCounts", "Active NICs", (v) => String(v)));
+  chips.push(...setChips(f.storageTotals, "storageTotals", "Total Storage", (v) => v));
   chips.push(...setChips(f.storageModels, "storageModels", "Storage Model", (v) => v));
   chips.push(...setChips(f.storageVendors, "storageVendors", "Storage Vendor", (v) => v));
   chips.push(...setChips(f.storageSerials, "storageSerials", "Storage Serial", (v) => v));
