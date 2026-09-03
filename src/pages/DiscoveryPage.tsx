@@ -1,5 +1,5 @@
 import { useState, useMemo, useCallback, useEffect, useRef } from "react";
-import { Link } from "react-router-dom";
+import { Link, useMatch, useNavigate } from "react-router-dom";
 import { useQueries, useQueryClient } from "@tanstack/react-query";
 import type { SearchNodeItem, VmFlavor } from "../api/types";
 import type { CartItem } from "../hooks/useCart";
@@ -9,6 +9,8 @@ import { DEFAULT_FILTERS, applyFilters, applyTextQuery, getActiveFilterChips } f
 import type { FlavorFilterState } from "../lib/flavorFilters";
 import { DEFAULT_FLAVOR_FILTERS, applyFlavorFilters, getActiveFlavorFilterChips } from "../lib/flavorFilters";
 import { useNodeSearch } from "../hooks/useNodeSearch";
+import { useSelectedNode, nodePath } from "../hooks/useSelectedNode";
+import { useSelectedFlavor, flavorPath, FLAVOR_ROUTE } from "../hooks/useSelectedFlavor";
 import { useFlavors } from "../hooks/useFlavors";
 import { useSites, useSiteMap } from "../hooks/useSites";
 import { FLAVOR_AVAILABILITY_STALE_MS, flavorAvailabilityKey } from "../hooks/useFlavorAvailability";
@@ -24,6 +26,7 @@ import { FlavorCalendar } from "../components/FlavorCalendar";
 import { FlavorCard } from "../components/FlavorCard";
 import { FlavorDetail } from "../components/FlavorDetail";
 import { VmOnlyNodeCard } from "../components/VmOnlyNodeCard";
+import { NoticeBar } from "../components/NoticeBar";
 import { SiteAvailabilityBars } from "../components/SiteAvailabilityBars";
 import { ReservationCalendar } from "../components/ReservationCalendar";
 
@@ -50,6 +53,13 @@ function buildAvailabilityParams(f: Pick<FilterState, "availabilityWindow" | "cu
   return { start: now.toISOString(), end: end.toISOString() };
 }
 
+const MAX_ID_IN_MESSAGE = 64;
+
+/** Quotes an identifier from the URL for display, clipped to a readable length. */
+function quoteId(id: string): string {
+  return `"${id.length > MAX_ID_IN_MESSAGE ? `${id.slice(0, MAX_ID_IN_MESSAGE)}…` : id}"`;
+}
+
 interface Props {
   cart: CartItem[];
   query: string;
@@ -69,9 +79,10 @@ export function DiscoveryPage({ cart, query, onQueryChange, onCartChange, onFlav
   const [debouncedQuery, setDebouncedQuery] = useState("");
   const [sortKey, setSortKey] = useState<SortKey>("default");
   const [availTab, setAvailTab] = useState<"now" | "timeline">("now");
-  const [selectedNode, setSelectedNode] = useState<SearchNodeItem | null>(null);
-  const [selectedFlavor, setSelectedFlavor] = useState<VmFlavor | null>(null);
-  const [activeView, setActiveView] = useState<"bare-metal" | "vms">("bare-metal");
+  const openedOnFlavor = !!useMatch(FLAVOR_ROUTE);
+  const [activeView, setActiveView] = useState<"bare-metal" | "vms">(
+    KVM_ENABLED && openedOnFlavor ? "vms" : "bare-metal",
+  );
   const [cardView, setCardView] = useState<"individual" | "type">("individual");
 
   const isBmView = activeView === "bare-metal";
@@ -133,6 +144,35 @@ export function DiscoveryPage({ cart, query, onQueryChange, onCartChange, onFlav
     () => (kvmNodesData?.items ?? []).filter((n) => n.node_mode === "vm_only"),
     [kvmNodesData],
   );
+
+  const navigate = useNavigate();
+  const nodePool = useMemo(() => [...allNodes, ...vmOnlyNodes], [allNodes, vmOnlyNodes]);
+  const nodePoolLoaded = !!data && (!KVM_ENABLED || !!kvmNodesData);
+  const { node: selectedNode, target: nodeTarget, notFound: nodeNotFound } = useSelectedNode(nodePool, nodePoolLoaded);
+  const { flavor: selectedFlavor, target: flavorTarget, notFound: flavorNotFound } = useSelectedFlavor(flavors, !!flavorsData);
+  const openNode = useCallback((node: SearchNodeItem) => navigate(nodePath(node)), [navigate]);
+  const closeNode = useCallback(() => navigate("/"), [navigate]);
+  const openFlavor = useCallback((flavor: VmFlavor) => navigate(flavorPath(KVM_SITE_ID, flavor)), [navigate]);
+  const closeFlavor = useCallback(() => navigate("/"), [navigate]);
+
+  const [notice, setNotice] = useState<string | null>(null);
+
+  const missingMessage = useMemo(() => {
+    const target = nodeTarget ?? flavorTarget;
+    if (!target) return null;
+    const siteName = siteMap.get(target.siteId)?.name;
+    if (sites.length > 0 && !siteName) return `Site ${quoteId(target.siteId)} does not exist.`;
+    const site = siteName ?? quoteId(target.siteId);
+    if (nodeTarget && nodeNotFound) return `Node ${quoteId(nodeTarget.uid)} does not exist at ${site}.`;
+    if (flavorTarget && flavorNotFound) return `Flavor ${quoteId(flavorTarget.uid)} does not exist at ${site}.`;
+    return null;
+  }, [nodeTarget, flavorTarget, nodeNotFound, flavorNotFound, sites, siteMap]);
+
+  useEffect(() => {
+    if (!missingMessage) return;
+    setNotice(missingMessage);
+    navigate("/", { replace: true });
+  }, [missingMessage, navigate]);
 
   const queryClient = useQueryClient();
   useEffect(() => {
@@ -435,6 +475,8 @@ export function DiscoveryPage({ cart, query, onQueryChange, onCartChange, onFlav
 
           <div className="flex flex-col gap-4">
 
+            {notice && <NoticeBar message={notice} onDismiss={() => setNotice(null)} />}
+
             {isBmView && (
               <div className="bg-white border border-grey-light rounded-md">
                 <div className="flex items-center gap-2 px-6 pt-3 pb-0">
@@ -483,7 +525,7 @@ export function DiscoveryPage({ cart, query, onQueryChange, onCartChange, onFlav
                   />
                 ) : (
                   <div className="px-6 py-3">
-                    <ReservationCalendar nodes={filtered} siteMap={siteMap} groupBy={cardView === "type" ? "type" : "individual"} onNodeClick={setSelectedNode} staleSiteIds={staleSiteIds} />
+                    <ReservationCalendar nodes={filtered} siteMap={siteMap} groupBy={cardView === "type" ? "type" : "individual"} onNodeClick={openNode} staleSiteIds={staleSiteIds} />
                   </div>
                 )}
               </div>
@@ -580,7 +622,7 @@ export function DiscoveryPage({ cart, query, onQueryChange, onCartChange, onFlav
                           siteName={siteMap.get(node.site_id)?.name ?? node.site_id}
                           selected={cartIds.has(node.uid)}
                           onSelect={(add) => onCartChange(node, add)}
-                          onClick={() => setSelectedNode(node)}
+                          onClick={() => openNode(node)}
                         />
                       ))
                     : typeGroups.map((nodes) => (
@@ -590,7 +632,7 @@ export function DiscoveryPage({ cart, query, onQueryChange, onCartChange, onFlav
                           siteName={siteMap.get(nodes[0].site_id)?.name ?? nodes[0].site_id}
                           selectedCount={nodes.filter((n) => cartIds.has(n.uid)).length}
                           onQuantityChange={(count) => handleNodeTypeQuantityChange(nodes, count)}
-                          onClick={() => setSelectedNode(nodes[0])}
+                          onClick={() => openNode(nodes[0])}
                         />
                       ))}
                 </div>
@@ -670,7 +712,7 @@ export function DiscoveryPage({ cart, query, onQueryChange, onCartChange, onFlav
                         siteName={siteMap.get(KVM_SITE_ID)?.name ?? KVM_SITE_ID}
                         count={flavorCounts.get(flavor.uid) ?? 0}
                         onCountChange={(count) => onFlavorCountChange(flavor, KVM_SITE_ID, count)}
-                        onClick={() => setSelectedFlavor(flavor)}
+                        onClick={() => openFlavor(flavor)}
                       />
                     ))}
                   </div>
@@ -690,7 +732,7 @@ export function DiscoveryPage({ cart, query, onQueryChange, onCartChange, onFlav
                             key={node.uid}
                             node={node}
                             siteName={siteMap.get(node.site_id)?.name ?? node.site_id}
-                            onClick={() => setSelectedNode(node)}
+                            onClick={() => openNode(node)}
                           />
                         ))}
                       </div>
@@ -710,7 +752,7 @@ export function DiscoveryPage({ cart, query, onQueryChange, onCartChange, onFlav
         peerNodes={peerNodes}
         siteMap={siteMap}
         reservationWindow={reservationWindow}
-        onClose={() => setSelectedNode(null)}
+        onClose={closeNode}
       />
 
       {KVM_ENABLED && (
@@ -722,7 +764,7 @@ export function DiscoveryPage({ cart, query, onQueryChange, onCartChange, onFlav
           onCountChange={(count) => selectedFlavor && onFlavorCountChange(selectedFlavor, KVM_SITE_ID, count)}
           horizonUrl={siteMap.get(KVM_SITE_ID)?.web}
           reservationWindow={reservationWindow}
-          onClose={() => setSelectedFlavor(null)}
+          onClose={closeFlavor}
         />
       )}
 

@@ -40,7 +40,24 @@ function AppInner() {
     setResetKey((k) => k + 1);
   }
 
-  const isDiscovery = location.pathname === "/";
+  const isDiscovery =
+    location.pathname === "/" ||
+    location.pathname.startsWith("/nodes/") ||
+    location.pathname.startsWith("/flavors/");
+
+  const discoveryPage = (
+    <DiscoveryPage
+      key={resetKey}
+      cart={cart}
+      query={query}
+      onQueryChange={setQuery}
+      searchEnterSignal={searchEnterSignal}
+      onCartChange={handleCartChange}
+      onFlavorCountChange={handleFlavorCountChange}
+      onClearCart={() => dispatch({ type: "clear" })}
+      onFiltersSummaryChange={setFiltersSummary}
+    />
+  );
 
   return (
     <Layout
@@ -50,22 +67,10 @@ function AppInner() {
       feedbackFiltersSummary={isDiscovery ? filtersSummary : undefined}
     >
       <Routes>
-        <Route
-          path="/"
-          element={
-            <DiscoveryPage
-              key={resetKey}
-              cart={cart}
-              query={query}
-              onQueryChange={setQuery}
-              searchEnterSignal={searchEnterSignal}
-              onCartChange={handleCartChange}
-              onFlavorCountChange={handleFlavorCountChange}
-              onClearCart={() => dispatch({ type: "clear" })}
-              onFiltersSummaryChange={setFiltersSummary}
-            />
-          }
-        />
+        <Route path="/" element={discoveryPage}>
+          <Route path="nodes/:siteId/:clusterId/:uid" element={null} />
+          <Route path="flavors/:siteId/:uid" element={null} />
+        </Route>
         <Route
           path="/cart"
           element={

@@ -79,9 +79,10 @@ export interface NetworkAdapter {
   management?: boolean | null;
   model?: string;
   mounted?: boolean | null;
+  name?: string;
   rate?: number;
   vendor?: string;
-  bridged?: boolean;
+  bridged?: boolean | null;
 }
 
 export interface BiosInfo {
