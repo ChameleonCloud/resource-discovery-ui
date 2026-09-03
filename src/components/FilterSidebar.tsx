@@ -13,6 +13,9 @@ import {
   hasNvme,
   hasSsd,
   hasNvmeOf,
+  inStorageTier,
+  ramSizeGib,
+  STORAGE_TOTAL_TIERS,
   DEFAULT_FILTERS,
   formatBytes,
   formatHz,
@@ -205,9 +208,9 @@ export function FilterSidebar({ all, filters, onFiltersChange, flavors, flavorFi
   }, [width]);
 
   const {
-    gpuModels, archs, cpuModels, cpuVendors, cpuClockSpeeds,
-    cpuCacheL1d, cpuCacheL1i, cpuCacheL2, cpuCacheL3, cpuVersions,
-    cpuOtherDescriptions, gpuCounts, gpuVendors, gpuMemories,
+    gpuModels, archs, cpuModels, cpuVendors, cpuCounts, threadCounts, cpuClockSpeeds,
+    cpuCacheL1, cpuCacheL1d, cpuCacheL1i, cpuCacheL2, cpuCacheL3, cpuVersions,
+    cpuOtherDescriptions, ramSizes, gpuCounts, gpuVendors, gpuMemories,
     fpgaBoardModels, fpgaBoardVendors, netModels, netVendors,
     netNames, activeDeviceCounts, storageModels, storageVendors,
     storageSerials, storageWwns, nvmeCount, ssdCount, racks,
@@ -219,13 +222,17 @@ export function FilterSidebar({ all, filters, onFiltersChange, flavors, flavorFi
       archs: uniqueValues(all, (n) => n.architecture?.platform_type).filter((a): a is string => !!a),
       cpuModels: uniqueValues(all, (n) => n.processor?.other_description ?? n.processor?.model).filter(Boolean) as string[],
       cpuVendors: uniqueValues(all, (n) => n.processor?.vendor).filter(Boolean) as string[],
+      cpuCounts: uniqueValues(all, (n) => n.architecture?.smp_size).filter((v): v is number => v != null),
+      threadCounts: uniqueValues(all, (n) => n.architecture?.smt_size).filter((v): v is number => v != null),
       cpuClockSpeeds: uniqueValues(all, (n) => n.processor?.clock_speed).filter((v): v is number => v != null),
+      cpuCacheL1: uniqueValues(all, (n) => n.processor?.cache_l1).filter((v): v is number => v != null),
       cpuCacheL1d: uniqueValues(all, (n) => n.processor?.cache_l1d).filter((v): v is number => v != null),
       cpuCacheL1i: uniqueValues(all, (n) => n.processor?.cache_l1i).filter((v): v is number => v != null),
       cpuCacheL2: uniqueValues(all, (n) => n.processor?.cache_l2).filter((v): v is number => v != null),
       cpuCacheL3: uniqueValues(all, (n) => n.processor?.cache_l3).filter((v): v is number => v != null),
       cpuVersions: uniqueValues(all, (n) => n.processor?.version).filter(Boolean) as string[],
       cpuOtherDescriptions: uniqueValues(all, (n) => n.processor?.other_description).filter(Boolean) as string[],
+      ramSizes: uniqueValues(all, ramSizeGib).filter((v) => v > 0),
       gpuCounts: uniqueValues(gpuNodes, (n) => n.gpu?.gpu_count).filter((v): v is number => v != null),
       gpuVendors: uniqueValues(gpuNodes, (n) => n.gpu?.gpu_vendor).filter(Boolean) as string[],
       gpuMemories: uniqueValues(gpuNodes, (n) => n.gpu?.gpu_memory).filter((v): v is number => v != null),
@@ -593,7 +600,7 @@ export function FilterSidebar({ all, filters, onFiltersChange, flavors, flavorFi
         {showAdvanced && (
           <div className="mt-3 space-y-4">
 
-            {(cpuModels.length > 0 || cpuVendors.length > 0) && (
+            {(cpuModels.length > 0 || cpuVendors.length > 0 || cpuCounts.length > 0 || threadCounts.length > 0) && (
               <GroupSection label="Processor">
                 {cpuModels.length > 0 && (
                   <div className="mb-2">
@@ -623,6 +630,36 @@ export function FilterSidebar({ all, filters, onFiltersChange, flavors, flavorFi
                   </div>
                 )}
 
+                {cpuCounts.length > 0 && (
+                  <div className="mb-2">
+                    <p className="text-xs text-grey-med mb-0.5"># CPUs</p>
+                    {cpuCounts.map((c) => (
+                      <FacetCheckbox
+                        key={c}
+                        id={`cpu-count-${c}`}
+                        label={String(c)}
+                        count={countWhere(all, (n) => (n.architecture?.smp_size ?? 0) === c)}
+                        checked={filters.cpuCounts.has(c)}
+                        onCheckedChange={() => onFiltersChange({ ...filters, cpuCounts: toggleNumSet(filters.cpuCounts, c) })}
+                      />
+                    ))}
+                  </div>
+                )}
+
+                {threadCounts.length > 0 && (
+                  <div className="mb-2">
+                    <p className="text-xs text-grey-med mb-0.5"># Threads</p>
+                    <AdvFacetList
+                      items={threadCounts.map(String)}
+                      checked={new Set(Array.from(filters.threadCounts).map(String))}
+                      getId={(v) => `thread-count-${v}`}
+                      getLabel={(v) => v}
+                      getCount={(v) => countWhere(all, (n) => (n.architecture?.smt_size ?? 0) === Number(v))}
+                      onToggle={(v) => onFiltersChange({ ...filters, threadCounts: toggleNumSet(filters.threadCounts, Number(v)) })}
+                    />
+                  </div>
+                )}
+
                 {cpuClockSpeeds.length > 0 && (
                   <div className="mb-2">
                     <p className="text-xs text-grey-med mb-0.5">Clock Speed</p>
@@ -637,8 +674,22 @@ export function FilterSidebar({ all, filters, onFiltersChange, flavors, flavorFi
                   </div>
                 )}
 
-                {(cpuCacheL1d.length > 0 || cpuCacheL1i.length > 0 || cpuCacheL2.length > 0 || cpuCacheL3.length > 0) && (
+                {(cpuCacheL1.length > 0 || cpuCacheL1d.length > 0 || cpuCacheL1i.length > 0 || cpuCacheL2.length > 0 || cpuCacheL3.length > 0) && (
                   <>
+                    {cpuCacheL1.length > 0 && (
+                      <div className="mb-2">
+                        <p className="text-xs text-grey-med mb-0.5">Cache L1</p>
+                        <AdvFacetList
+                          items={cpuCacheL1.map(String)}
+                          checked={new Set(Array.from(filters.cpuCacheL1).map(String))}
+                          getId={(v) => `cpu-cache-l1-${v}`}
+                          getLabel={(v) => formatBytes(Number(v))}
+                          getCount={(v) => countWhere(all, (n) => (n.processor?.cache_l1 ?? 0) === Number(v))}
+                          onToggle={(v) => onFiltersChange({ ...filters, cpuCacheL1: toggleNumSet(filters.cpuCacheL1, Number(v)) })}
+                        />
+                      </div>
+                    )}
+
                     {cpuCacheL1d.length > 0 && (
                       <div className="mb-2">
                         <p className="text-xs text-grey-med mb-0.5">Cache L1 D</p>
@@ -728,6 +779,22 @@ export function FilterSidebar({ all, filters, onFiltersChange, flavors, flavorFi
                     )}
                   </>
                 )}
+              </GroupSection>
+            )}
+
+            {ramSizes.length > 0 && (
+              <GroupSection label="Memory">
+                <div>
+                  <p className="text-xs text-grey-med mb-0.5">RAM Size</p>
+                  <AdvFacetList
+                    items={ramSizes.map(String)}
+                    checked={new Set(Array.from(filters.ramSizes).map(String))}
+                    getId={(v) => `ram-size-${v}`}
+                    getLabel={(v) => `${v} GiB`}
+                    getCount={(v) => countWhere(all, (n) => ramSizeGib(n) === Number(v))}
+                    onToggle={(v) => onFiltersChange({ ...filters, ramSizes: toggleNumSet(filters.ramSizes, Number(v)) })}
+                  />
+                </div>
               </GroupSection>
             )}
 
@@ -891,6 +958,20 @@ export function FilterSidebar({ all, filters, onFiltersChange, flavors, flavorFi
 
             {(storageModels.length > 0 || storageVendors.length > 0 || nvmeCount > 0 || ssdCount > 0) && (
               <GroupSection label="Storage">
+                <div className="mb-2">
+                  <p className="text-xs text-grey-med mb-0.5">Total Storage</p>
+                  {STORAGE_TOTAL_TIERS.map((tier) => (
+                    <FacetCheckbox
+                      key={tier.label}
+                      id={`storage-total-${tier.label}`}
+                      label={tier.label}
+                      count={countWhere(all, (n) => inStorageTier(n, tier))}
+                      checked={filters.storageTotals.has(tier.label)}
+                      onCheckedChange={() => onFiltersChange({ ...filters, storageTotals: toggleSet(filters.storageTotals, tier.label) })}
+                    />
+                  ))}
+                </div>
+
                 {storageModels.length > 0 && (
                   <div className="mb-2">
                     <p className="text-xs text-grey-med mb-0.5">Model</p>
