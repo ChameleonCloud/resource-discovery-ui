@@ -11,12 +11,11 @@ import { DEFAULT_FLAVOR_FILTERS, applyFlavorFilters, getActiveFlavorFilterChips 
 import { useNodeSearch } from "../hooks/useNodeSearch";
 import { useSelectedNode, nodePath } from "../hooks/useSelectedNode";
 import { useSelectedFlavor, flavorPath, FLAVOR_ROUTE } from "../hooks/useSelectedFlavor";
-import { useFlavors } from "../hooks/useFlavors";
 import { useSites, useSiteMap } from "../hooks/useSites";
 import { FLAVOR_AVAILABILITY_STALE_MS, flavorAvailabilityKey } from "../hooks/useFlavorAvailability";
 import { truncateToHour } from "../lib/dateUtils";
-import { isCoreSite, KVM_ENABLED, KVM_SITE_ID } from "../lib/sites";
-import { fetchSiteAvailabilityStatus, fetchNodeAvailability, fetchFlavorAvailability } from "../api/client";
+import { isCoreSite, KVM_ENABLED } from "../lib/sites";
+import { fetchSiteAvailabilityStatus, fetchNodeAvailability, fetchFlavorAvailability, fetchSiteFlavors } from "../api/client";
 import { findNextAvailableWindow } from "../lib/availability";
 import { FilterSidebar } from "../components/FilterSidebar";
 import { NodeCard } from "../components/NodeCard";
@@ -79,10 +78,11 @@ export function DiscoveryPage({ cart, query, onQueryChange, onCartChange, onFlav
   const [debouncedQuery, setDebouncedQuery] = useState("");
   const [sortKey, setSortKey] = useState<SortKey>("default");
   const [availTab, setAvailTab] = useState<"now" | "timeline">("now");
-  const openedOnFlavor = !!useMatch(FLAVOR_ROUTE);
+  const flavorRouteSiteId = useMatch(FLAVOR_ROUTE)?.params.siteId;
   const [activeView, setActiveView] = useState<"bare-metal" | "vms">(
-    KVM_ENABLED && openedOnFlavor ? "vms" : "bare-metal",
+    KVM_ENABLED && flavorRouteSiteId ? "vms" : "bare-metal",
   );
+  const [vmSiteChoice, setVmSiteChoice] = useState(flavorRouteSiteId);
   const [cardView, setCardView] = useState<"individual" | "type">("individual");
 
   const isBmView = activeView === "bare-metal";
@@ -106,27 +106,56 @@ export function DiscoveryPage({ cart, query, onQueryChange, onCartChange, onFlav
       min_ram: filters.minRam ?? undefined,
       infiniband: filters.infiniband || undefined,
       ...avail,
-      limit: 500,
     };
   }, [filters]);
 
   const { data, isFetching } = useNodeSearch(searchParams);
   const { data: sitesData } = useSites();
-  const { data: flavorsData, isFetching: flavorsFetching } = useFlavors(KVM_SITE_ID, KVM_ENABLED);
   const siteMap = useSiteMap();
 
   const allNodes = useMemo(() => data?.items ?? [], [data]);
+  const bareMetalNodes = useMemo(() => allNodes.filter((n) => n.lease_mode !== "flavor"), [allNodes]);
   const sites = useMemo(() => sitesData?.items ?? [], [sitesData]);
+  const siteIds = useMemo(() => sites.map((s) => s.uid), [sites]);
 
-  const flavors = useMemo(() => flavorsData?.items ?? [], [flavorsData]);
-  const filteredFlavors = useMemo(() => {
-    const afterFilters = applyFlavorFilters(flavors, flavorFilters);
+  const flavorQueries = useQueries({
+    queries: siteIds.map((id) => ({
+      queryKey: ["flavors", id],
+      queryFn: () => fetchSiteFlavors(id),
+      staleTime: 5 * 60 * 1000,
+      enabled: KVM_ENABLED,
+    })),
+  });
+  const flavorsFetching = flavorQueries.some((q) => q.isFetching);
+  const vmSites = useMemo(
+    () => sites
+      .filter((_s, i) => (flavorQueries[i]?.data?.items.length ?? 0) > 0)
+      .sort((a, b) => a.name.localeCompare(b.name)),
+    [sites, flavorQueries],
+  );
+  const vmSiteId = vmSites.find((s) => s.uid === vmSiteChoice)?.uid ?? vmSites[0]?.uid;
+  const vmSiteName = vmSiteId ? siteMap.get(vmSiteId)?.name ?? vmSiteId : "";
+
+  const flavors = useMemo(
+    () => flavorQueries[siteIds.indexOf(vmSiteId ?? "")]?.data?.items ?? [],
+    [flavorQueries, siteIds, vmSiteId],
+  );
+  const matchFlavors = useCallback((list: VmFlavor[]) => {
+    const afterFilters = applyFlavorFilters(list, flavorFilters);
     const q = debouncedQuery.trim().toLowerCase();
     return q ? afterFilters.filter((f) =>
       f.name.toLowerCase().includes(q) ||
       (q === "gpu" && f.gpu.gpu)
     ) : afterFilters;
-  }, [flavors, flavorFilters, debouncedQuery]);
+  }, [flavorFilters, debouncedQuery]);
+  const filteredFlavors = useMemo(() => matchFlavors(flavors), [matchFlavors, flavors]);
+  const vmSiteMatches = useMemo(
+    () => vmSites
+      .map((site) => ({ site, count: matchFlavors(flavorQueries[siteIds.indexOf(site.uid)]?.data?.items ?? []).length }))
+      .filter((m) => m.count > 0),
+    [vmSites, matchFlavors, flavorQueries, siteIds],
+  );
+  const vmMatchCount = vmSiteMatches.reduce((n, m) => n + m.count, 0);
   const sortedFlavors = useMemo(() => {
     const arr = [...filteredFlavors];
     if (sortKey === "alphabetical") return arr.sort((a, b) => a.name.localeCompare(b.name));
@@ -139,20 +168,24 @@ export function DiscoveryPage({ cart, query, onQueryChange, onCartChange, onFlav
       a.name.localeCompare(b.name)
     );
   }, [filteredFlavors, sortKey]);
-  const { data: kvmNodesData } = useNodeSearch({ site_id: KVM_SITE_ID, limit: 500 }, KVM_ENABLED);
+  const { data: vmSiteNodesData } = useNodeSearch({ site_id: vmSiteId }, KVM_ENABLED && !!vmSiteId);
   const vmOnlyNodes = useMemo(
-    () => (kvmNodesData?.items ?? []).filter((n) => n.node_mode === "vm_only"),
-    [kvmNodesData],
+    () => (vmSiteNodesData?.items ?? []).filter((n) => n.site_id === vmSiteId && n.lease_mode === "flavor"),
+    [vmSiteNodesData, vmSiteId],
   );
 
   const navigate = useNavigate();
   const nodePool = useMemo(() => [...allNodes, ...vmOnlyNodes], [allNodes, vmOnlyNodes]);
-  const nodePoolLoaded = !!data && (!KVM_ENABLED || !!kvmNodesData);
+  const nodePoolLoaded = !!data && (!KVM_ENABLED || !vmSiteId || !!vmSiteNodesData);
   const { node: selectedNode, target: nodeTarget, notFound: nodeNotFound } = useSelectedNode(nodePool, nodePoolLoaded);
-  const { flavor: selectedFlavor, target: flavorTarget, notFound: flavorNotFound } = useSelectedFlavor(flavors, !!flavorsData);
+  const routeFlavorQuery = flavorQueries[siteIds.indexOf(flavorRouteSiteId ?? "")];
+  const { flavor: selectedFlavor, target: flavorTarget, notFound: flavorNotFound } = useSelectedFlavor(
+    routeFlavorQuery?.data?.items ?? [],
+    !!routeFlavorQuery?.data,
+  );
   const openNode = useCallback((node: SearchNodeItem) => navigate(nodePath(node)), [navigate]);
   const closeNode = useCallback(() => navigate("/"), [navigate]);
-  const openFlavor = useCallback((flavor: VmFlavor) => navigate(flavorPath(KVM_SITE_ID, flavor)), [navigate]);
+  const openFlavor = useCallback((siteId: string, flavor: VmFlavor) => navigate(flavorPath(siteId, flavor)), [navigate]);
   const closeFlavor = useCallback(() => navigate("/"), [navigate]);
 
   const [notice, setNotice] = useState<string | null>(null);
@@ -176,21 +209,21 @@ export function DiscoveryPage({ cart, query, onQueryChange, onCartChange, onFlav
 
   const queryClient = useQueryClient();
   useEffect(() => {
-    if (!isVmView || sortedFlavors.length === 0) return;
+    if (!isVmView || !vmSiteId || sortedFlavors.length === 0) return;
     const defaultId = sortedFlavors[0].uid;
     const now = truncateToHour();
     const end = new Date(now.getTime() + 7 * 24 * 3600 * 1000);
     void queryClient.prefetchQuery({
-      queryKey: flavorAvailabilityKey(KVM_SITE_ID, defaultId, now, end),
-      queryFn: () => fetchFlavorAvailability(KVM_SITE_ID, defaultId, now, end),
+      queryKey: flavorAvailabilityKey(vmSiteId, defaultId, now, end),
+      queryFn: () => fetchFlavorAvailability(vmSiteId, defaultId, now, end),
       staleTime: FLAVOR_AVAILABILITY_STALE_MS,
     });
-  }, [isVmView, sortedFlavors, queryClient]);
+  }, [isVmView, vmSiteId, sortedFlavors, queryClient]);
 
   const flavorCounts = useMemo(() => {
     const m = new Map<string, number>();
     for (const item of cart) {
-      if (item.kind === "flavor" && item.siteId === KVM_SITE_ID) m.set(item.flavor.uid, item.count);
+      if (item.kind === "flavor") m.set(`${item.siteId}:${item.flavor.uid}`, item.count);
     }
     return m;
   }, [cart]);
@@ -205,13 +238,12 @@ export function DiscoveryPage({ cart, query, onQueryChange, onCartChange, onFlav
 
   const [siteOrder, setSiteOrder] = useState<string[]>([]);
   useEffect(() => {
-    if (allNodes.length === 0) return;
+    if (bareMetalNodes.length === 0) return;
     const counts = new Map<string, number>();
-    for (const n of allNodes) counts.set(n.site_id, (counts.get(n.site_id) ?? 0) + 1);
+    for (const n of bareMetalNodes) counts.set(n.site_id, (counts.get(n.site_id) ?? 0) + 1);
     setSiteOrder(Array.from(counts.entries()).sort((a, b) => b[1] - a[1]).map(([id]) => id));
-  }, [allNodes]);
+  }, [bareMetalNodes]);
 
-  const siteIds = useMemo(() => sites.map((s) => s.uid), [sites]);
   const syncQueries = useQueries({
     queries: siteIds.map((id) => ({
       queryKey: ["site-availability-status", id],
@@ -253,9 +285,9 @@ export function DiscoveryPage({ cart, query, onQueryChange, onCartChange, onFlav
     filters.availabilityWindow === "custom" ? Boolean(filters.customDuration) : filters.duration !== "any";
 
   const stateFiltered = useMemo(() => {
-    const afterFilters = applyFilters(allNodes, filters);
+    const afterFilters = applyFilters(bareMetalNodes, filters);
     return applyTextQuery(afterFilters, debouncedQuery);
-  }, [allNodes, filters, debouncedQuery]);
+  }, [bareMetalNodes, filters, debouncedQuery]);
 
   const slotQueries = useQueries({
     queries: stateFiltered.map((n) => ({
@@ -372,12 +404,12 @@ export function DiscoveryPage({ cart, query, onQueryChange, onCartChange, onFlav
 
   const peerNodes = useMemo(() => {
     if (!selectedNode) return [];
-    return allNodes.filter(
+    return bareMetalNodes.filter(
       (n) =>
         n.node_type === selectedNode.node_type &&
         n.site_id === selectedNode.site_id,
     );
-  }, [selectedNode, allNodes]);
+  }, [selectedNode, bareMetalNodes]);
 
   const sitesDifferFromDefault = useMemo(() => {
     if (sites.length === 0) return false;
@@ -449,10 +481,37 @@ export function DiscoveryPage({ cart, query, onQueryChange, onCartChange, onFlav
     });
   }, []);
 
+  const vmViewSwitchers = debouncedQuery.trim() && (
+    <>
+      {vmSiteMatches.filter((m) => m.site.uid !== vmSiteId).map(({ site, count }) => (
+        <div key={site.uid} className="flex items-center gap-2 text-xs text-purple-700 bg-purple-50 border border-purple-200 rounded px-3 py-2">
+          <span>{count} VM flavor{count !== 1 ? "s" : ""} at {site.name} match your search.</span>
+          <button
+            onClick={() => setVmSiteChoice(site.uid)}
+            className="font-medium underline underline-offset-2 hover:text-purple-900 transition-colors whitespace-nowrap"
+          >
+            Switch to {site.name} →
+          </button>
+        </div>
+      ))}
+      {sorted.length > 0 && (
+        <div className="flex items-center gap-2 text-xs text-blue-700 bg-blue-50 border border-blue-200 rounded px-3 py-2">
+          <span>{sorted.length} bare metal node{sorted.length !== 1 ? "s" : ""} match your search.</span>
+          <button
+            onClick={() => handleViewChange("bare-metal")}
+            className="font-medium underline underline-offset-2 hover:text-blue-900 transition-colors whitespace-nowrap"
+          >
+            Switch to Bare Metal →
+          </button>
+        </div>
+      )}
+    </>
+  );
+
   return (
     <div className="flex">
       <FilterSidebar
-        all={allNodes}
+        all={bareMetalNodes}
         filters={filters}
         onFiltersChange={setFilters}
         flavors={flavors}
@@ -587,11 +646,11 @@ export function DiscoveryPage({ cart, query, onQueryChange, onCartChange, onFlav
               </div>
             )}
 
-            {isBmView && KVM_ENABLED && debouncedQuery.trim() && sortedFlavors.length > 0 && (
+            {isBmView && KVM_ENABLED && debouncedQuery.trim() && vmSiteMatches.length > 0 && (
               <div className="flex items-center gap-2 text-xs text-purple-700 bg-purple-50 border border-purple-200 rounded px-3 py-2">
-                <span>{sortedFlavors.length} VM flavor{sortedFlavors.length !== 1 ? "s" : ""} match your search.</span>
+                <span>{vmMatchCount} VM flavor{vmMatchCount !== 1 ? "s" : ""} match your search.</span>
                 <button
-                  onClick={() => handleViewChange("vms")}
+                  onClick={() => { setVmSiteChoice(vmSiteMatches[0].site.uid); handleViewChange("vms"); }}
                   className="font-medium underline underline-offset-2 hover:text-purple-900 transition-colors whitespace-nowrap"
                 >
                   Switch to Virtual Machines →
@@ -640,22 +699,45 @@ export function DiscoveryPage({ cart, query, onQueryChange, onCartChange, onFlav
             )}
 
             {/* VM flavor cards */}
-            {isVmView && (
-              sortedFlavors.length === 0 && !flavorsFetching ? (
-                <div className="flex flex-col items-center justify-center h-40 text-grey">
-                  <p className="text-sm font-medium mb-1">No flavors found</p>
-                  <p className="text-xs">Try adjusting your search query or filters.</p>
+            {isVmView && vmSites.length > 1 && (
+              <div className="flex border-b border-grey-light" role="tablist" aria-label="Virtual machine sites">
+                {vmSites.map((site) => (
                   <button
-                    onClick={() => { setFlavorFilters(DEFAULT_FLAVOR_FILTERS); onQueryChange(""); }}
-                    className="mt-3 text-sm text-link hover:text-link-hover transition-colors"
+                    key={site.uid}
+                    role="tab"
+                    aria-selected={site.uid === vmSiteId}
+                    onClick={() => setVmSiteChoice(site.uid)}
+                    className={`px-4 py-2 text-sm font-medium border-b-2 transition-colors ${
+                      site.uid === vmSiteId
+                        ? "border-purple-500 text-purple-600"
+                        : "border-transparent text-grey hover:text-grey-dark"
+                    }`}
                   >
-                    Reset filters
+                    {site.name}
                   </button>
-                </div>
-              ) : (
+                ))}
+              </div>
+            )}
+
+            {isVmView && (
+              (!vmSiteId || sortedFlavors.length === 0) && !flavorsFetching ? (
+                <>
+                  {vmViewSwitchers}
+                  <div className="flex flex-col items-center justify-center h-40 text-grey">
+                    <p className="text-sm font-medium mb-1">No flavors found</p>
+                    <p className="text-xs">Try adjusting your search query or filters.</p>
+                    <button
+                      onClick={() => { setFlavorFilters(DEFAULT_FLAVOR_FILTERS); onQueryChange(""); }}
+                      className="mt-3 text-sm text-link hover:text-link-hover transition-colors"
+                    >
+                      Reset filters
+                    </button>
+                  </div>
+                </>
+              ) : vmSiteId && (
                 <>
                   <div className="bg-white border border-grey-light rounded-md p-6">
-                    <FlavorCalendar siteId={KVM_SITE_ID} flavors={sortedFlavors} />
+                    <FlavorCalendar key={vmSiteId} siteId={vmSiteId} flavors={sortedFlavors} />
                   </div>
                   <div className="flex items-center gap-3 border-b border-grey-light py-1">
                     <div className="flex items-center gap-1.5 flex-wrap flex-1">
@@ -693,26 +775,16 @@ export function DiscoveryPage({ cart, query, onQueryChange, onCartChange, onFlav
                       <option value="alphabetical">Sort: Alphabetical</option>
                     </select>
                   </div>
-                  {debouncedQuery.trim() && sorted.length > 0 && (
-                    <div className="flex items-center gap-2 text-xs text-blue-700 bg-blue-50 border border-blue-200 rounded px-3 py-2">
-                      <span>{sorted.length} bare metal node{sorted.length !== 1 ? "s" : ""} match your search.</span>
-                      <button
-                        onClick={() => handleViewChange("bare-metal")}
-                        className="font-medium underline underline-offset-2 hover:text-blue-900 transition-colors whitespace-nowrap"
-                      >
-                        Switch to Bare Metal →
-                      </button>
-                    </div>
-                  )}
+                  {vmViewSwitchers}
                   <div className="grid gap-3 grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">
                     {sortedFlavors.map((flavor) => (
                       <FlavorCard
                         key={flavor.uid}
                         flavor={flavor}
-                        siteName={siteMap.get(KVM_SITE_ID)?.name ?? KVM_SITE_ID}
-                        count={flavorCounts.get(flavor.uid) ?? 0}
-                        onCountChange={(count) => onFlavorCountChange(flavor, KVM_SITE_ID, count)}
-                        onClick={() => openFlavor(flavor)}
+                        siteName={vmSiteName}
+                        count={flavorCounts.get(`${vmSiteId}:${flavor.uid}`) ?? 0}
+                        onCountChange={(count) => onFlavorCountChange(flavor, vmSiteId, count)}
+                        onClick={() => openFlavor(vmSiteId, flavor)}
                       />
                     ))}
                   </div>
@@ -755,14 +827,15 @@ export function DiscoveryPage({ cart, query, onQueryChange, onCartChange, onFlav
         onClose={closeNode}
       />
 
-      {KVM_ENABLED && (
+      {KVM_ENABLED && flavorTarget && (
         <FlavorDetail
           flavor={selectedFlavor}
-          siteName={siteMap.get(KVM_SITE_ID)?.name ?? KVM_SITE_ID}
-          sites={sites.filter((s) => s.uid === KVM_SITE_ID)}
-          count={selectedFlavor ? flavorCounts.get(selectedFlavor.uid) ?? 0 : 0}
-          onCountChange={(count) => selectedFlavor && onFlavorCountChange(selectedFlavor, KVM_SITE_ID, count)}
-          horizonUrl={siteMap.get(KVM_SITE_ID)?.web}
+          siteId={flavorTarget.siteId}
+          siteName={siteMap.get(flavorTarget.siteId)?.name ?? flavorTarget.siteId}
+          sites={sites.filter((s) => s.uid === flavorTarget.siteId)}
+          count={selectedFlavor ? flavorCounts.get(`${flavorTarget.siteId}:${selectedFlavor.uid}`) ?? 0 : 0}
+          onCountChange={(count) => selectedFlavor && onFlavorCountChange(selectedFlavor, flavorTarget.siteId, count)}
+          horizonUrl={siteMap.get(flavorTarget.siteId)?.web}
           reservationWindow={reservationWindow}
           onClose={closeFlavor}
         />

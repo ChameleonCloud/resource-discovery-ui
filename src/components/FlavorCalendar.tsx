@@ -1,5 +1,6 @@
 import { useState, useMemo, useRef, useEffect } from "react";
 import type { VmFlavor } from "../api/types";
+import { ApiError } from "../api/client";
 import { useFlavorAvailability } from "../hooks/useFlavorAvailability";
 import { toDateInput, truncateToHour } from "../lib/dateUtils";
 
@@ -113,7 +114,7 @@ export function FlavorCalendar({ siteId, flavors }: FlavorCalendarProps) {
     setPreset(null);
   }
 
-  const { data, isLoading, isError } = useFlavorAvailability(
+  const { data, isLoading, isError, error } = useFlavorAvailability(
     siteId,
     effectiveFlavorId,
     startDate,
@@ -271,6 +272,8 @@ export function FlavorCalendar({ siteId, flavors }: FlavorCalendarProps) {
             </svg>
             <span>Loading availability… this may take a moment</span>
           </div>
+        ) : error instanceof ApiError && error.status === 404 ? (
+          <p className="text-sm italic text-grey-med">Availability isn&apos;t published for this site.</p>
         ) : isError ? (
           <p className="text-sm italic text-grey-med">Could not load availability data.</p>
         ) : !chartContent ? (

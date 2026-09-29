@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
-import { ApiError, fetchFlavor, fetchNode } from "../../src/api/client";
+import { ApiError, fetchFlavor, fetchNode, fetchNodeSearch } from "../../src/api/client";
 
 function mockFetch(response: Partial<Response>) {
   const fetchMock = vi.fn().mockResolvedValue({ ok: true, json: () => Promise.resolve({}), ...response });
@@ -46,5 +46,39 @@ describe("fetchFlavor", () => {
     const fetchMock = mockFetch({});
     await fetchFlavor("kvm", "m1.large");
     expect(fetchMock.mock.calls[0][0]).toBe("/api/sites/kvm/flavors/m1.large");
+  });
+});
+
+describe("fetchNodeSearch", () => {
+  function nodes(count: number, from = 0) {
+    return Array.from({ length: count }, (_, i) => ({ uid: `n${from + i}` }));
+  }
+
+  function mockPages(...pages: { total: number; items: unknown[] }[]) {
+    const fetchMock = vi.fn();
+    for (const page of pages) {
+      fetchMock.mockResolvedValueOnce({ ok: true, json: () => Promise.resolve({ offset: 0, ...page }) });
+    }
+    vi.stubGlobal("fetch", fetchMock);
+    return fetchMock;
+  }
+
+  it("fetches every page until it has the total", async () => {
+    const fetchMock = mockPages({ total: 507, items: nodes(500) }, { total: 507, items: nodes(7, 500) });
+    const result = await fetchNodeSearch({ site_id: "tacc" });
+
+    expect(result.items.map((n) => n.uid)).toEqual(nodes(507).map((n) => n.uid));
+    expect(fetchMock.mock.calls.map(([url]) => url)).toEqual([
+      "/api/nodes/search?site_id=tacc&limit=500&offset=0",
+      "/api/nodes/search?site_id=tacc&limit=500&offset=500",
+    ]);
+  });
+
+  it("stops when a page comes back empty before the total", async () => {
+    const fetchMock = mockPages({ total: 507, items: nodes(500) }, { total: 507, items: [] });
+    const result = await fetchNodeSearch({});
+
+    expect(result.items).toHaveLength(500);
+    expect(fetchMock).toHaveBeenCalledTimes(2);
   });
 });

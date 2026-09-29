@@ -7,6 +7,4 @@ export function isCoreSite(uid: string): boolean {
   return CORE_SITE_IDS.has(uid);
 }
 
-export const KVM_SITE_ID = "kvm";
-
 export const KVM_ENABLED = import.meta.env.VITE_FEATURE_KVM !== "false" && import.meta.env.VITE_FEATURE_KVM !== "0";
