@@ -44,7 +44,11 @@ export function fetchSites(): Promise<SiteCollection> {
   return apiFetch<SiteCollection>("/sites?limit=500");
 }
 
-export function fetchNodeSearch(params: NodeSearchParams): Promise<NodeSearchResponse> {
+/** Largest page `/nodes/search` returns. */
+const NODE_SEARCH_PAGE_SIZE = 500;
+
+/** Fetches every node matching `params`, one page at a time. */
+export async function fetchNodeSearch(params: NodeSearchParams): Promise<NodeSearchResponse> {
   const q = new URLSearchParams();
   if (params.site_id) q.set("site_id", params.site_id);
   if (params.node_type) q.set("node_type", params.node_type);
@@ -54,9 +58,16 @@ export function fetchNodeSearch(params: NodeSearchParams): Promise<NodeSearchRes
   if (params.min_ram !== undefined) q.set("min_ram", String(params.min_ram));
   if (params.start) q.set("start", params.start);
   if (params.end) q.set("end", params.end);
-  q.set("offset", String(params.offset ?? 0));
-  q.set("limit", String(params.limit ?? 500));
-  return apiFetch<NodeSearchResponse>(`/nodes/search?${q}`);
+  q.set("limit", String(NODE_SEARCH_PAGE_SIZE));
+  const items: SearchNodeItem[] = [];
+  for (;;) {
+    q.set("offset", String(items.length));
+    const page = await apiFetch<NodeSearchResponse>(`/nodes/search?${q}`);
+    items.push(...page.items);
+    if (page.items.length === 0 || items.length >= page.total) {
+      return { total: page.total, offset: 0, items };
+    }
+  }
 }
 
 /** Fetches one node, with site and cluster filled from the arguments and availability unknown. */

@@ -3,11 +3,11 @@ import * as Dialog from "@radix-ui/react-dialog";
 import type { VmFlavor, Site } from "../api/types";
 import { ReservationSnippets, SpecRow } from "./ReservationSnippets";
 import type { ReservationWindow } from "./ReservationSnippets";
-import { KVM_SITE_ID } from "../lib/sites";
 import { clamp } from "../lib/flavorFilters";
 
 interface Props {
   flavor: VmFlavor | null;
+  siteId: string;
   siteName: string;
   sites?: Site[];
   count: number;
@@ -19,7 +19,7 @@ interface Props {
 
 type Tab = "info" | "reserve";
 
-export function FlavorDetail({ flavor, siteName, sites, count, onCountChange, horizonUrl, reservationWindow, onClose }: Props) {
+export function FlavorDetail({ flavor, siteId, siteName, sites, count, onCountChange, horizonUrl, reservationWindow, onClose }: Props) {
   const [tab, setTab] = useState<Tab>("info");
 
   function handleOpenChange(open: boolean) {
@@ -152,7 +152,7 @@ export function FlavorDetail({ flavor, siteName, sites, count, onCountChange, ho
                 <section>
                   <ReservationSnippets
                     nodes={[]}
-                    flavors={[{ siteId: KVM_SITE_ID, flavor, count: count > 0 ? count : 1 }]}
+                    flavors={[{ siteId, flavor, count: count > 0 ? count : 1 }]}
                     sites={sites}
                     horizonUrl={horizonUrl}
                     reservationWindow={reservationWindow}

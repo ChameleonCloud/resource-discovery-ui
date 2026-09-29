@@ -18,7 +18,7 @@ type Tab = "info" | "reserve";
 export function NodeDetail({ node, peerNodes, siteMap, reservationWindow, onClose }: Props) {
   const [tab, setTab] = useState<Tab>("info");
   const site = node ? siteMap.get(node.site_id) : null;
-  const hideAvailability = node?.node_mode === "vm_only";
+  const hideAvailability = node?.lease_mode === "flavor";
 
   function handleOpenChange(open: boolean) {
     if (!open) {

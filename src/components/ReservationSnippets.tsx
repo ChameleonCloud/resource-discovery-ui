@@ -181,11 +181,10 @@ function pythonSnippet(
     }
     lines.push(`my_lease = lease.Lease(`, ...leaseArgs, `)`);
 
-    if (siteFlavors.length > 0 && siteNodes.length === 0) {
-      for (const f of siteFlavors) {
-        lines.push(`my_lease.add_flavor_reservation(name="${f.flavor.name}", amount=${f.count})`);
-      }
-    } else if (reserveBy === "name") {
+    for (const f of siteFlavors) {
+      lines.push(`my_lease.add_flavor_reservation(name="${f.flavor.name}", amount=${f.count})`);
+    }
+    if (reserveBy === "name") {
       for (const n of siteNodes) {
         lines.push(`my_lease.add_node_reservation(amount=1, node_name="${n.node_name}")`);
       }

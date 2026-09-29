@@ -116,7 +116,7 @@ export interface SearchNodeItem {
   uid: string;
   node_type: string;
   node_name?: string;
-  node_mode?: string;
+  lease_mode?: "baremetal" | "flavor";
   site_id: string;
   cluster_id: string;
   availability: "available" | "reserved" | "unknown" | "maintenance";
@@ -197,8 +197,6 @@ export interface NodeSearchParams {
   min_ram?: number;
   start?: string;
   end?: string;
-  offset?: number;
-  limit?: number;
 }
 
 export interface FlavorAvailabilitySegment {
