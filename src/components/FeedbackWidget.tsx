@@ -3,7 +3,7 @@ import { useLocation } from "react-router-dom";
 import * as Dialog from "@radix-ui/react-dialog";
 import { submitFeedback } from "../api/client";
 
-const HELP_DESK_URL = "https://www.chameleoncloud.org/user/help/ticket/new/guest/";
+export const HELP_DESK_URL = "https://www.chameleoncloud.org/user/help/ticket/new/guest/";
 
 type Sentiment = "up" | "down";
 type Status = "idle" | "submitting" | "submitted" | "error";
