@@ -8,10 +8,9 @@ interface Props {
   siteName: string;
   selectedCount: number;
   onQuantityChange: (count: number) => void;
-  onClick: () => void;
 }
 
-export function NodeTypeCard({ nodes, siteName, selectedCount, onQuantityChange, onClick }: Props) {
+export function NodeTypeCard({ nodes, siteName, selectedCount, onQuantityChange }: Props) {
   const node = nodes[0];
   const isCore = isCoreSite(node.site_id);
 
@@ -22,18 +21,14 @@ export function NodeTypeCard({ nodes, siteName, selectedCount, onQuantityChange,
 
   return (
     <article
-      className={`bg-white rounded-lg shadow-sm border-2 transition-all cursor-pointer hover:shadow-md hover:border-brand-info ${
+      className={`bg-white rounded-lg shadow-sm border-2 transition-all ${
         selectedCount > 0 ? "border-brand-info ring-2 ring-brand-info/20" : isCore ? "border-grey-light" : "border-dashed border-grey-light"
       }`}
-      onClick={onClick}
-      role="button"
-      tabIndex={0}
-      onKeyDown={(e) => e.key === "Enter" && onClick()}
       aria-label={`${node.node_type} at ${siteName}`}
     >
       <div className="p-3">
         <div className="flex items-center gap-2 mb-1">
-          <div className="flex-shrink-0" onClick={(e) => e.stopPropagation()}>
+          <div className="flex-shrink-0">
             <Checkbox.Root
               checked={selectedCount > 0}
               onCheckedChange={(v) => onQuantityChange(v ? 1 : 0)}
@@ -49,7 +44,7 @@ export function NodeTypeCard({ nodes, siteName, selectedCount, onQuantityChange,
           </div>
           <h2 className="font-semibold text-grey-dark truncate text-sm flex-1">{node.node_type}</h2>
           {selectedCount > 0 ? (
-            <div className="flex items-center gap-1 flex-shrink-0" onClick={(e) => e.stopPropagation()}>
+            <div className="flex items-center gap-1 flex-shrink-0">
               <button
                 onClick={() => onQuantityChange(Math.max(0, selectedCount - 1))}
                 className="w-5 h-5 flex items-center justify-center rounded border border-grey-light text-grey hover:border-brand-info hover:text-brand-info text-xs leading-none"

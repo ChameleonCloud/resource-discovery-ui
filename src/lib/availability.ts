@@ -45,7 +45,9 @@ export function findNextAvailableWindow(
 
   for (const candidateStart of sorted) {
     const candidateEnd = candidateStart + durationMs;
-    const hasConflict = intervals.some((iv) => candidateStart < iv.end && candidateEnd > iv.start);
+    const hasConflict = intervals.some((iv) =>
+      iv.start <= candidateStart ? candidateStart < iv.end : candidateEnd > iv.start,
+    );
     if (!hasConflict) {
       return { start: new Date(candidateStart), end: new Date(candidateEnd) };
     }

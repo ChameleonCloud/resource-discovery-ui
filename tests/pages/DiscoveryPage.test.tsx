@@ -1,17 +1,18 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import { render, screen, within } from "@testing-library/react";
+import { render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter } from "react-router-dom";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import type { SearchNodeItem, Site, VmFlavor } from "../../src/api/types";
 import type { CartItem } from "../../src/hooks/useCart";
 import { DiscoveryPage } from "../../src/pages/DiscoveryPage";
-import { fetchNodeSearch, fetchSiteFlavors, fetchSites } from "../../src/api/client";
+import { fetchNodeAvailability, fetchNodeSearch, fetchSiteFlavors, fetchSites } from "../../src/api/client";
 
 vi.mock("../../src/api/client", async (importOriginal) => ({
   ...(await importOriginal<typeof import("../../src/api/client")>()),
   fetchSites: vi.fn(),
   fetchNodeSearch: vi.fn(),
+  fetchNodeAvailability: vi.fn(),
   fetchSiteFlavors: vi.fn(),
   fetchSiteAvailabilityStatus: vi.fn(() => new Promise(() => {})),
   fetchFlavorAvailability: vi.fn(() => new Promise(() => {})),
@@ -70,6 +71,12 @@ function mockApi(flavorsBySite: Record<string, VmFlavor[]>) {
     const items = flavorsBySite[siteId] ?? [];
     return { total: items.length, offset: 0, items };
   });
+}
+
+function mockNodeTypes() {
+  mockApi({});
+  const items = [node("uc", "uc-bm01", "baremetal"), { ...node("tacc", "tacc-bm01", "baremetal"), node_type: "compute_haswell" }];
+  vi.mocked(fetchNodeSearch).mockResolvedValue({ total: items.length, offset: 0, items });
 }
 
 function renderPage(cart: CartItem[] = [], query = "") {
@@ -169,6 +176,75 @@ describe("DiscoveryPage", () => {
     expect(await screen.findByRole("tab", { name: "KVM@TACC", selected: true })).toBeInTheDocument();
     expect(screen.getByText("1 VM flavor at CHI@TACC match your search.")).toBeInTheDocument();
     expect(screen.queryByText("1 VM flavor at KVM@TACC match your search.")).not.toBeInTheDocument();
+  });
+
+  it("lists node types only for checked sites", async () => {
+    mockNodeTypes();
+    renderPage();
+    await userEvent.click(await screen.findByRole("button", { name: /Any node type/ }));
+    expect(screen.getByRole("checkbox", { name: /compute_haswell/ })).toBeInTheDocument();
+
+    await userEvent.click(screen.getByRole("checkbox", { name: "CHI@TACC" }));
+    await userEvent.click(screen.getByRole("button", { name: /Any node type/ }));
+    expect(screen.getByRole("checkbox", { name: /compute_skylake/ })).toBeInTheDocument();
+    expect(screen.queryByRole("checkbox", { name: /compute_haswell/ })).not.toBeInTheDocument();
+  });
+
+  it("shows only nodes of the checked node types", async () => {
+    mockNodeTypes();
+    renderPage();
+    await userEvent.click(await screen.findByRole("button", { name: /Any node type/ }));
+    await userEvent.click(screen.getByRole("checkbox", { name: /compute_haswell/ }));
+
+    expect(screen.getByRole("button", { name: "tacc-bm01 at CHI@TACC" })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "uc-bm01 at CHI@UC" })).not.toBeInTheDocument();
+  });
+
+  it("keeps a picked node type at sites whose nodes were hidden when it was picked", async () => {
+    mockApi({});
+    vi.mocked(fetchNodeSearch).mockImplementation(async ({ start }) => {
+      const items = NODES.filter((n) => n.lease_mode === "baremetal" && (!start || n.site_id === "uc"));
+      return { total: items.length, offset: 0, items };
+    });
+    vi.mocked(fetchNodeAvailability).mockImplementation(async (site_id, cluster_id, node_id) => ({
+      node_id, cluster_id, site_id, last_updated: "", reservations: [],
+    }));
+    renderPage();
+    await screen.findByRole("button", { name: "tacc-bm01 at CHI@TACC" });
+    await userEvent.selectOptions(screen.getByDisplayValue("Any availability"), "now");
+    await userEvent.selectOptions(screen.getByDisplayValue("any duration"), "6");
+    await waitFor(() => expect(screen.queryByRole("button", { name: "tacc-bm01 at CHI@TACC" })).not.toBeInTheDocument());
+
+    await userEvent.click(screen.getByRole("button", { name: /Any node type/ }));
+    await userEvent.click(screen.getByRole("checkbox", { name: /compute_skylake/ }));
+    await userEvent.selectOptions(screen.getByDisplayValue("Available starting now"), "any");
+
+    expect(await screen.findByRole("button", { name: "tacc-bm01 at CHI@TACC" })).toBeInTheDocument();
+  });
+
+  it("opens no node panel when a node type card is clicked", async () => {
+    mockApi({});
+    renderPage();
+    await screen.findByRole("button", { name: "uc-bm01 at CHI@UC" });
+    await userEvent.click(screen.getByLabelText("By node type"));
+    await userEvent.click(screen.getByLabelText("compute_skylake at CHI@UC"));
+
+    expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+  });
+
+  it("shows nodes that free up within 7 days", async () => {
+    mockApi({});
+    const day = 24 * 3600 * 1000;
+    const reservedFor = (days: number) => [{ start: new Date(Date.now() - day).toISOString(), end: new Date(Date.now() + days * day).toISOString() }];
+    vi.mocked(fetchNodeAvailability).mockImplementation(async (site_id, cluster_id, node_id) => ({
+      node_id, cluster_id, site_id, last_updated: "", reservations: reservedFor(site_id === "uc" ? 2 : 10),
+    }));
+    renderPage();
+    await screen.findByRole("button", { name: "uc-bm01 at CHI@UC" });
+    await userEvent.selectOptions(screen.getByDisplayValue("Any availability"), "7d");
+
+    expect(await screen.findByRole("button", { name: "uc-bm01 at CHI@UC" })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "tacc-bm01 at CHI@TACC" })).not.toBeInTheDocument();
   });
 
   it("offers the switch when the current VM site has no matching flavors", async () => {
