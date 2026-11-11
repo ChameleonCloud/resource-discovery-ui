@@ -7,7 +7,7 @@ export interface FilterState {
   arch: string | null;
   minRam: number | null;
   infiniband: boolean;
-  availabilityWindow: "now" | "7d" | "custom"; // when a lease would start
+  availabilityWindow: "any" | "now" | "7d" | "custom"; // when a lease would start
   customStart: string;   // datetime-local string; empty = now
   customDuration: string; // hours, for custom window only: "1"|"6"|"24"|"72"|"168"|"336"|""; empty = unset
   duration: "any" | "6" | "24" | "72" | "168"; // how long the lease would run (now / 7d modes)
@@ -52,7 +52,7 @@ export const DEFAULT_FILTERS: FilterState = {
   arch: null,
   minRam: null,
   infiniband: false,
-  availabilityWindow: "now",
+  availabilityWindow: "any",
   customStart: "",
   customDuration: "",
   duration: "any",
@@ -186,8 +186,8 @@ export function hasNvmeOf(n: SearchNodeItem): boolean {
 
 export function applyFilters(nodes: SearchNodeItem[], f: FilterState): SearchNodeItem[] {
   return nodes.filter((n) => {
-    const noAvailabilityFilter = f.availabilityWindow !== "custom" && f.duration === "any";
-    if (!noAvailabilityFilter && n.availability === "maintenance") return false;
+    if (f.availabilityWindow !== "any" && n.availability === "maintenance") return false;
+    if (f.availabilityWindow === "now" && f.duration === "any" && n.availability !== "available") return false;
     if (f.hasGpu !== null && (n.gpu?.gpu ?? false) !== f.hasGpu) return false;
     if (f.gpuModels.size > 0 && !f.gpuModels.has(n.gpu?.gpu_model ?? "")) return false;
     if (f.arch && n.architecture?.platform_type !== f.arch) return false;
@@ -397,11 +397,12 @@ export function getActiveFilterChips(f: FilterState): FilterChip[] {
   }
 
   if (f.availabilityWindow !== DEFAULT_FILTERS.availabilityWindow) {
-    const label = f.availabilityWindow === "7d" ? "Starting within 7 days" : "Custom start time";
+    const label =
+      f.availabilityWindow === "now" ? "Starting now" : f.availabilityWindow === "7d" ? "Starting within 7 days" : "Custom start time";
     chips.push({
       id: "availabilityWindow",
       label,
-      clear: (cur) => ({ ...cur, availabilityWindow: "now", customStart: "", customDuration: "" }),
+      clear: (cur) => ({ ...cur, availabilityWindow: "any", customStart: "", customDuration: "", duration: "any" }),
     });
   }
 

@@ -35,6 +35,22 @@ describe("applyFilters", () => {
     expect(applyFilters(NODES, DEFAULT_FILTERS)).toHaveLength(4);
   });
 
+  it("keeps reserved and maintenance nodes by default", () => {
+    const nodes = [makeNode({ uid: "r", availability: "reserved" }), makeNode({ uid: "m", availability: "maintenance" })];
+    expect(applyFilters(nodes, DEFAULT_FILTERS).map((n) => n.uid)).toEqual(["r", "m"]);
+  });
+
+  it("keeps only available nodes when starting now for any duration", () => {
+    const nodes = [
+      makeNode({ uid: "a", availability: "available" }),
+      makeNode({ uid: "r", availability: "reserved" }),
+      makeNode({ uid: "m", availability: "maintenance" }),
+      makeNode({ uid: "u", availability: "unknown" }),
+    ];
+    const f = { ...DEFAULT_FILTERS, availabilityWindow: "now" as const };
+    expect(applyFilters(nodes, f).map((n) => n.uid)).toEqual(["a"]);
+  });
+
   it("filters by GPU", () => {
     const f = { ...DEFAULT_FILTERS, hasGpu: true };
     const result = applyFilters(NODES, f);

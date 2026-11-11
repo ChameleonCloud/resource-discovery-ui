@@ -52,7 +52,7 @@ function buildSiteData(nodes: SearchNodeItem[], siteMap: Map<string, Site>): Sit
   }
 
   for (const [siteId, siteData] of map) {
-    siteData.byNodeType = Array.from(typeMaps.get(siteId)!.values()).sort((a, b) => b.available - a.available);
+    siteData.byNodeType = Array.from(typeMaps.get(siteId)!.values()).sort((a, b) => b.available - a.available || a.type.localeCompare(b.type));
   }
 
   return Array.from(map.values()).sort((a, b) => b.total - a.total);
@@ -171,13 +171,20 @@ export function SiteAvailabilityBars({ nodes, siteMap, onFilter, selectedChips, 
             {site.byNodeType.map((nt) => {
               const chipKey = `${site.siteId}:${nt.type}`;
               const isSelected = selectedChips?.has(chipKey) ?? false;
+              const isFaded = !isSelected && (selectedChips?.size ?? 0) > 0;
+              const total = nt.available + nt.reserved + nt.maintenance + nt.unknown;
+              const breakdown = ([["available", nt.available], ["reserved", nt.reserved], ["maintenance", nt.maintenance], ["unknown", nt.unknown]] as const)
+                .filter(([, count]) => count > 0)
+                .map(([label, count]) => `${count} ${label}`)
+                .join(" · ");
               return (
                 <button
                   key={nt.type}
                   onClick={(e) => { e.stopPropagation(); onFilter?.(site.siteId, nt.type); }}
+                  title={breakdown}
                   className={`text-xs px-1.5 py-0.5 rounded-full font-medium transition-all ${
                     onFilter ? "cursor-pointer" : "cursor-default"
-                  } ${
+                  } ${isFaded ? "opacity-40" : ""} ${
                     isSelected
                       ? "bg-brand-info text-white ring-2 ring-brand-info ring-offset-1"
                       : nt.available > 0
@@ -189,7 +196,7 @@ export function SiteAvailabilityBars({ nodes, siteMap, onFilter, selectedChips, 
                       : "bg-grey-light text-grey hover:opacity-75"
                   }`}
                 >
-                  {nt.type} ({nt.available > 0 ? nt.available : nt.reserved > 0 ? `${nt.reserved} res` : nt.maintenance > 0 ? `${nt.maintenance} maint` : "?"})
+                  {nt.type} {nt.available}/{total}
                 </button>
               );
             })}

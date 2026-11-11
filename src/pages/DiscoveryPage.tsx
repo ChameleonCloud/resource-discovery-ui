@@ -42,7 +42,6 @@ function buildAvailabilityParams(f: Pick<FilterState, "availabilityWindow" | "cu
     const end = new Date(start.getTime() + hours * 3600 * 1000);
     return { start: start.toISOString(), end: end.toISOString() };
   }
-  // "No duration filter" — show everything regardless of availability.
   if (f.duration === "any") return {};
   // "7d" duration is enforced by the per-node slot check below, not the server.
   if (f.availabilityWindow === "7d") return {};
@@ -282,7 +281,9 @@ export function DiscoveryPage({ cart, query, onQueryChange, onCartChange, onFlav
 
   // The search API only filters by status, not duration, so duration is enforced per-node below.
   const needsSlotCheck =
-    filters.availabilityWindow === "custom" ? Boolean(filters.customDuration) : filters.duration !== "any";
+    filters.availabilityWindow === "7d" ||
+    filters.availabilityWindow === "custom" ||
+    (filters.availabilityWindow === "now" && filters.duration !== "any");
 
   const stateFiltered = useMemo(() => {
     const afterFilters = applyFilters(bareMetalNodes, filters);
@@ -303,7 +304,8 @@ export function DiscoveryPage({ cart, query, onQueryChange, onCartChange, onFlav
     if (!needsSlotCheck) return stateFiltered;
     const now = new Date();
     const isCustom = filters.availabilityWindow === "custom";
-    const durationMs = Number(isCustom ? filters.customDuration : filters.duration) * 3600 * 1000;
+    const hours = isCustom ? Number(filters.customDuration) : filters.duration === "any" ? 0 : Number(filters.duration);
+    const durationMs = hours * 3600 * 1000;
     const searchStart = isCustom && filters.customStart ? new Date(filters.customStart) : now;
     const horizonEnd =
       filters.availabilityWindow === "7d" ? now.getTime() + SEVEN_DAYS_MS : searchStart.getTime();
@@ -389,6 +391,18 @@ export function DiscoveryPage({ cart, query, onQueryChange, onCartChange, onFlav
       return next;
     });
   }, []);
+
+  const handleNodeTypeToggle = useCallback((nodeType: string) => {
+    if (selectedNodeTypeChips.includes(nodeType)) {
+      handleRemoveNodeTypeChip(nodeType);
+      return;
+    }
+    setChipSelections((prev) => {
+      const next = new Set(prev);
+      for (const id of siteIds) next.add(`${id}:${nodeType}`);
+      return next;
+    });
+  }, [selectedNodeTypeChips, handleRemoveNodeTypeChip, siteIds]);
 
   const handleNodeTypeQuantityChange = useCallback((nodes: SearchNodeItem[], count: number) => {
     const inCart = nodes.filter((n) => cartIds.has(n.uid));
@@ -522,6 +536,8 @@ export function DiscoveryPage({ cart, query, onQueryChange, onCartChange, onFlav
         sitesDifferFromDefault={sitesDifferFromDefault}
         chipSelectionsSize={chipSelections.size}
         onSiteToggle={handleSiteToggle}
+        selectedNodeTypes={selectedNodeTypeChips}
+        onNodeTypeToggle={handleNodeTypeToggle}
         onReset={handleResetBm}
         view={activeView}
         onViewChange={handleViewChange}
@@ -691,7 +707,6 @@ export function DiscoveryPage({ cart, query, onQueryChange, onCartChange, onFlav
                           siteName={siteMap.get(nodes[0].site_id)?.name ?? nodes[0].site_id}
                           selectedCount={nodes.filter((n) => cartIds.has(n.uid)).length}
                           onQuantityChange={(count) => handleNodeTypeQuantityChange(nodes, count)}
-                          onClick={() => openNode(nodes[0])}
                         />
                       ))}
                 </div>

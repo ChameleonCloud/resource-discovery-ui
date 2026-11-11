@@ -3,6 +3,7 @@ import * as Checkbox from "@radix-ui/react-checkbox";
 import type { SearchNodeItem, VmFlavor, Site } from "../api/types";
 import type { FilterState } from "../lib/filters";
 import {
+  applyFilters,
   computeFacetCount,
   countWhere,
   uniqueValues,
@@ -37,6 +38,8 @@ interface Props {
   sitesDifferFromDefault: boolean;
   chipSelectionsSize: number;
   onSiteToggle: (siteId: string) => void;
+  selectedNodeTypes: string[];
+  onNodeTypeToggle: (nodeType: string) => void;
   onReset: () => void;
   view: "bare-metal" | "vms";
   onViewChange: (view: "bare-metal" | "vms") => void;
@@ -93,6 +96,57 @@ function Section({ title, action, children }: { title: string; action?: React.Re
         {action}
       </div>
       {children}
+    </div>
+  );
+}
+
+function NodeTypeDropdown({
+  types,
+  selected,
+  onToggle,
+}: {
+  types: [string, number][];
+  selected: string[];
+  onToggle: (nodeType: string) => void;
+}) {
+  const [open, setOpen] = useState(false);
+  const ref = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    if (!open) return;
+    function handleMouseDown(e: MouseEvent) {
+      if (!ref.current?.contains(e.target as Node)) setOpen(false);
+    }
+    document.addEventListener("mousedown", handleMouseDown);
+    return () => document.removeEventListener("mousedown", handleMouseDown);
+  }, [open]);
+
+  const label = selected.length === 0 ? "Any node type" : selected.length === 1 ? selected[0] : `${selected.length} node types`;
+  return (
+    <div ref={ref} className="relative" onKeyDown={(e) => { if (e.key === "Escape") setOpen(false); }}>
+      <button
+        type="button"
+        onClick={() => setOpen((v) => !v)}
+        aria-expanded={open}
+        className="w-full flex items-center justify-between gap-2 text-xs border border-grey-light rounded px-1.5 py-1 text-grey-dark bg-white focus:outline-none focus:ring-1 focus:ring-brand-info"
+      >
+        <span className="truncate">{label}</span>
+        <span>▾</span>
+      </button>
+      {open && (
+        <div className="absolute z-10 mt-1 w-full max-h-64 overflow-y-auto bg-white border border-grey-light rounded shadow-lg px-2 py-1">
+          {types.map(([nodeType, count]) => (
+            <FacetCheckbox
+              key={nodeType}
+              id={`node-type-${nodeType}`}
+              label={nodeType}
+              count={count}
+              checked={selected.includes(nodeType)}
+              onCheckedChange={() => onToggle(nodeType)}
+            />
+          ))}
+        </div>
+      )}
     </div>
   );
 }
@@ -162,7 +216,7 @@ const MAX_WIDTH = 800;
 const DEFAULT_WIDTH = 256;
 const WIDTH_STORAGE_KEY = "filterSidebarWidth";
 
-export function FilterSidebar({ all, filters, onFiltersChange, flavors, flavorFilters, onFlavorFiltersChange, sites, selectedSites, sitesDifferFromDefault, chipSelectionsSize, onSiteToggle, onReset, view, onViewChange, cardView, onCardViewChange }: Props) {
+export function FilterSidebar({ all, filters, onFiltersChange, flavors, flavorFilters, onFlavorFiltersChange, sites, selectedSites, sitesDifferFromDefault, chipSelectionsSize, onSiteToggle, selectedNodeTypes, onNodeTypeToggle, onReset, view, onViewChange, cardView, onCardViewChange }: Props) {
   const [showAdvanced, setShowAdvanced] = useState(false);
   const [showAssociateSites, setShowAssociateSites] = useState(false);
   const [width, setWidth] = useState(() => {
@@ -252,6 +306,16 @@ export function FilterSidebar({ all, filters, onFiltersChange, flavors, flavorFi
     };
   }, [all]);
 
+  const nodeTypes = useMemo(() => {
+    const counts = new Map<string, number>();
+    for (const n of all) if (selectedSites.has(n.site_id)) counts.set(n.node_type, 0);
+    for (const n of applyFilters(all, filters)) {
+      const count = counts.get(n.node_type);
+      if (count !== undefined && selectedSites.has(n.site_id)) counts.set(n.node_type, count + 1);
+    }
+    return Array.from(counts).sort(([a], [b]) => a.localeCompare(b));
+  }, [all, filters, selectedSites]);
+
   function toggleSet(set: Set<string>, value: string): Set<string> {
     const next = new Set(set);
     if (next.has(value)) next.delete(value);
@@ -324,24 +388,26 @@ export function FilterSidebar({ all, filters, onFiltersChange, flavors, flavorFi
         </button>
       ) : undefined}>
         <div className="flex flex-wrap items-center gap-1.5 text-sm text-grey-dark">
-          <span>Available</span>
           <select
             value={filters.availabilityWindow}
-            onChange={(e) =>
+            onChange={(e) => {
+              const availabilityWindow = e.target.value as FilterState["availabilityWindow"];
               onFiltersChange({
                 ...filters,
-                availabilityWindow: e.target.value as FilterState["availabilityWindow"],
+                availabilityWindow,
                 customStart: "",
                 customDuration: "",
-              })
-            }
+                duration: availabilityWindow === "any" ? "any" : filters.duration,
+              });
+            }}
             className="text-xs border border-grey-light rounded px-1.5 py-1 text-grey-dark focus:outline-none focus:ring-1 focus:ring-brand-info"
           >
-            <option value="now">starting now</option>
-            <option value="7d">starting within 7 days</option>
-            <option value="custom">starting at a custom time</option>
+            <option value="any">Any availability</option>
+            <option value="now">Available starting now</option>
+            <option value="7d">Available starting within 7 days</option>
+            <option value="custom">Available starting at a custom time</option>
           </select>
-          {filters.availabilityWindow !== "custom" && (
+          {(filters.availabilityWindow === "now" || filters.availabilityWindow === "7d") && (
             <>
               <span>for at least</span>
               <select
@@ -496,6 +562,12 @@ export function FilterSidebar({ all, filters, onFiltersChange, flavors, flavorFi
           </Section>
         );
       })()}
+
+      {nodeTypes.length > 0 && (
+        <Section title="Node type">
+          <NodeTypeDropdown types={nodeTypes} selected={selectedNodeTypes} onToggle={onNodeTypeToggle} />
+        </Section>
+      )}
 
       <Section title="GPU">
         <FacetCheckbox
